@@ -29,13 +29,29 @@ class FrameGrabber(threading.Thread):
         self.capture_time = 0.0
     def run(self):
         try:
-            # 指定されたデバイスを DSHOW モードで開く
-            self.cap = cv2.VideoCapture(self.device_id)
-            
-            if not self.cap.isOpened():
-                # 失敗時のフォールバック (フラグを外して再試行)
-                base_id = self.device_id & 0xFF
-                self.cap = cv2.VideoCapture(base_id)
+            max_retries = 5
+            for i in range(max_retries):
+                if not self.running: return
+                
+                # 指定されたデバイスを DSHOW モードで開く
+                self.cap = cv2.VideoCapture(self.device_id)
+                
+                if not self.cap.isOpened():
+                    # 失敗時のフォールバック (フラグを外して再試行)
+                    base_id = self.device_id & 0xFF
+                    self.cap = cv2.VideoCapture(base_id)
+
+                if self.cap.isOpened():
+                    print(f"Camera opened successfully on attempt {i+1}")
+                    break
+                else:
+                    print(f"Camera Open Retry {i+1}/{max_retries}...")
+                    if self.cap: self.cap.release(); self.cap = None
+                    time.sleep(1.0)
+
+            if not self.cap or not self.cap.isOpened():
+                print("Failed to open camera after multiple attempts.")
+                return
 
             # プロパティの設定 (DSHOW はオープン直後に行うのが鉄則)
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
@@ -46,7 +62,7 @@ class FrameGrabber(threading.Thread):
             actual_w = self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
             actual_h = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
             actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
-            print(f"DirectShow Camera Active: {actual_w}x{actual_h} @ {actual_fps}fps")
+            print(f"Camera Active: {actual_w}x{actual_h} @ {actual_fps}fps")
 
             while self.running:
                 if self.cap and self.cap.isOpened():
@@ -157,10 +173,16 @@ class TimerManager:
         return sorted_formats
 
     def restart(self):
+        print("TimerManager restart initiated...")
         tc = self.config_manager.get("timer", "thread_count") or 2
         if hasattr(self, 'executor'): self.executor.shutdown(wait=False)
         self.executor = ThreadPoolExecutor(max_workers=tc)
-        if self.grabber: self.grabber.stop(); self.grabber.join(timeout=1.0)
+        
+        if self.grabber: 
+            self.grabber.stop()
+            self.grabber.join(timeout=2.0) # Wait longer for release
+            self.grabber = None
+            
         if self.vcam: self.vcam.close(); self.vcam = None
         
         t_cam = self.config_manager.get("timer", "target_camera_name")
@@ -186,7 +208,8 @@ class TimerManager:
         device_index = self.find_camera_id(t_cam)
         final_device_id = (device_index + cv2.CAP_DSHOW) if sys.platform == 'win32' else device_index
         
-        self.grabber = FrameGrabber(final_device_id, capture_w, capture_h, fps); self.grabber.start()
+        self.grabber = FrameGrabber(final_device_id, capture_w, capture_h, fps)
+        self.grabber.start()
 
     def _detect_markers_in_image(self, gray_img, marker_system, stag_lib, ec_rate):
         results = []
@@ -289,7 +312,10 @@ class TimerManager:
         return display_f
 
     def run(self):
-        self.restart(); self.running = True
+        # 起動時の冗長な restart() 呼び出しを削除
+        # すでに restart() が main.py から呼ばれているため、そのまま running ループに入る
+        self.running = True
+        print("TimerManager main loop started.")
         while self.running:
             if self.grabber and self.grabber.new_frame_event.wait(timeout=0.1):
                 self.grabber.new_frame_event.clear(); raw_f = self.grabber.frame; cap_t = self.grabber.capture_time

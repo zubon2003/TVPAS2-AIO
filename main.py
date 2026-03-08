@@ -104,14 +104,15 @@ class IntegratedLapTimerApp(QMainWindow):
         
         # 2. Start Services
         self.web.start()
-        self.processor.start() # 追加: データプロセッサ（監視スレッド）の開始
+        self.processor.start()
         
-        # 3. Start Timer Manager (Camera/Processing)
-        # 起動時の仮想カメラ設定を明示的に反映（UIのロックと配信開始）
-        self.on_vcam_toggled(self.chk_vcam.isChecked())
-        
+        # 3. Start Timer Manager (Main Loop)
         if not self.timer_mgr.running:
             self.timer_mgr.start()
+
+        # 4. Reflect Initial Config & Start Capture
+        # 少しだけ遅延させて UI 初期化時のデバイスアクセスとの競合を避ける
+        QTimer.singleShot(500, lambda: self.on_vcam_toggled(self.chk_vcam.isChecked()))
             
         self.ui_timer = QTimer(); self.ui_timer.timeout.connect(self.update_gui_loop); self.ui_timer.start(30)
 
