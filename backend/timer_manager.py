@@ -183,7 +183,10 @@ class TimerManager:
             self.grabber.join(timeout=2.0) # Wait longer for release
             self.grabber = None
             
-        if self.vcam: self.vcam.close(); self.vcam = None
+        if self.vcam: 
+            v_tmp = self.vcam
+            self.vcam = None # 先に None にしてループ側での使用を防ぐ
+            v_tmp.close()
         
         t_cam = self.config_manager.get("timer", "target_camera_name")
         res_cfg = self.config_manager.get("timer", "resolution") or "1280x720"
@@ -313,7 +316,6 @@ class TimerManager:
 
     def run(self):
         # 起動時の冗長な restart() 呼び出しを削除
-        # すでに restart() が main.py から呼ばれているため、そのまま running ループに入る
         self.running = True
         print("TimerManager main loop started.")
         while self.running:
@@ -321,16 +323,21 @@ class TimerManager:
                 self.grabber.new_frame_event.clear(); raw_f = self.grabber.frame; cap_t = self.grabber.capture_time
                 if raw_f is not None:
                     self.display_frame = self.process_frame(raw_f.copy(), cap_t)
-                    if self.vcam:
-                        h, w = self.display_frame.shape[:2]
-                        tw, th = self.vcam_w, self.vcam_h
-                        canvas = np.zeros((th, tw, 3), dtype=np.uint8)
-                        scale = min(tw / w, th / h)
-                        nw, nh = int(w * scale), int(h * scale)
-                        v_frame = cv2.resize(self.display_frame, (nw, nh), interpolation=cv2.INTER_CUBIC)
-                        dx, dy = (tw - nw) // 2, (th - nh) // 2
-                        canvas[dy:dy+nh, dx:dx+nw] = v_frame
-                        self.vcam.send(canvas); self.vcam.sleep_until_next_frame()
+                    
+                    # vcam へのアクセスをスレッドセーフにする
+                    vcam_local = self.vcam
+                    if vcam_local:
+                        try:
+                            h, w = self.display_frame.shape[:2]
+                            tw, th = self.vcam_w, self.vcam_h
+                            canvas = np.zeros((th, tw, 3), dtype=np.uint8)
+                            scale = min(tw / w, th / h)
+                            nw, nh = int(w * scale), int(h * scale)
+                            v_frame = cv2.resize(self.display_frame, (nw, nh), interpolation=cv2.INTER_CUBIC)
+                            dx, dy = (tw - nw) // 2, (th - nh) // 2
+                            canvas[dy:dy+nh, dx:dx+nw] = v_frame
+                            vcam_local.send(canvas); vcam_local.sleep_until_next_frame()
+                        except: pass # Restart 中のクローズなど
             now = time.monotonic()
             if now - self.last_heartbeat_time >= 0.5:
                 if self.on_heartbeat_callback:

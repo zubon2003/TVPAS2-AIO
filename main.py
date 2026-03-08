@@ -112,7 +112,7 @@ class IntegratedLapTimerApp(QMainWindow):
 
         # 4. Reflect Initial Config & Start Capture
         # 少しだけ遅延させて UI 初期化時のデバイスアクセスとの競合を避ける
-        QTimer.singleShot(500, lambda: self.on_vcam_toggled(self.chk_vcam.isChecked()))
+        QTimer.singleShot(1000, lambda: self.on_vcam_toggled(self.chk_vcam.isChecked()))
             
         self.ui_timer = QTimer(); self.ui_timer.timeout.connect(self.update_gui_loop); self.ui_timer.start(30)
 
@@ -239,7 +239,14 @@ class IntegratedLapTimerApp(QMainWindow):
         
         # Camera
         cam_row = QHBoxLayout(); cam_row.addWidget(QLabel("Target Camera:")); self.combo_cam = QComboBox()
-        self.combo_cam.addItems(self.timer_mgr.get_input_devices()); self.combo_cam.setCurrentText(self.config.get("timer", "target_camera_name"))
+        self.combo_cam.addItems(self.timer_mgr.get_input_devices())
+        
+        # 初期値設定
+        target_cam = self.config.get("timer", "target_camera_name")
+        self.combo_cam.blockSignals(True)
+        self.combo_cam.setCurrentText(target_cam)
+        self.combo_cam.blockSignals(False)
+        
         self.combo_cam.currentTextChanged.connect(lambda t: (self.config.set("timer", "target_camera_name", t), self.update_camera_formats(), self.timer_mgr.restart()))
         cam_row.addWidget(self.combo_cam, 1); layout.addLayout(cam_row)
         
@@ -250,7 +257,9 @@ class IntegratedLapTimerApp(QMainWindow):
         layout.addLayout(fmt_row)
         
         # Set Initial Aspect Ratio from Config
+        self.combo_aspect.blockSignals(True)
         self.combo_aspect.setCurrentText(self.config.get("timer", "aspect_ratio") or "16:9")
+        self.combo_aspect.blockSignals(False)
         
         self.combo_res.currentTextChanged.connect(lambda t: (self.config.set("timer", "resolution", t), self.update_camera_formats(), self.timer_mgr.restart(), self.update_mode_states()) if t else None)
         self.combo_fps.currentTextChanged.connect(lambda t: (self.config.set("timer", "target_fps", int(t)), self.timer_mgr.restart()) if t else None)
@@ -308,7 +317,6 @@ class IntegratedLapTimerApp(QMainWindow):
         self.spin_flk.valueChanged.connect(lambda v: self.config.set("timer", "flicker_length", v))
         
         layout.addStretch(); self.tabs.addTab(tab, "TIMER"); self.update_camera_formats()
-        if self.chk_vcam.isChecked(): self.on_vcam_toggled(True)
 
     def create_relay_tab(self):
         tab = QWidget(); layout = QVBoxLayout(tab)
