@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TVPAS Camera Auto Switcher</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 20px;
+            background-color: #121212;
+            color: #e0e0e0;
+        }
+        .container {
+            max-width: 800px;
+            margin: auto;
+            background-color: #1e1e1e;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+            border: 1px solid #333;
+        }
+        h1 {
+            color: #df691a;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .setting-group {
+            margin-bottom: 25px;
+            padding: 20px;
+            border: 1px solid #333;
+            border-radius: 5px;
+            background-color: #2a2a2a;
+        }
+        .setting-group h2 {
+            margin-top: 0;
+            color: #df691a;
+            border-bottom: 1px solid #444;
+            padding-bottom: 10px;
+            margin-bottom: 15px;
+        }
+        .setting-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        .setting-item label {
+            flex: 0 0 180px;
+            font-weight: bold;
+            margin-right: 15px;
+            color: #b0b0b0;
+        }
+        .setting-item input[type="text"],
+        .setting-item input[type="number"] {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #555;
+            border-radius: 4px;
+            font-size: 16px;
+            max-width: 300px;
+            background-color: #333;
+            color: #e0e0e0;
+        }
+        .error-message {
+            color: #cf6679;
+            font-weight: bold;
+            margin-top: 10px;
+        }
+
+        .switching-mode-group { margin-bottom: 15px; }
+        .switching-mode-group > label {
+            display: block;
+            margin-bottom: 10px;
+            font-weight: bold;
+            color: #b0b0b0;
+        }
+        .switching-mode-group .switching-mode-row label {
+            background-color: #333;
+            border: 1px solid #555;
+            color: #b0b0b0;
+            padding: 8px 15px;
+            margin: 5px;
+            cursor: pointer;
+            border-radius: 4px;
+            display: inline-block;
+            font-size: 14px;
+            width: 40px;
+            text-align: center;
+            transition: background-color 0.2s ease, border-color 0.2s ease;
+        }
+
+        #mode_manual + label,
+        #mode_auto + label {
+            width: 90px;
+        }
+
+        .switching-mode-group input[type="radio"] {
+            display: none;
+        }
+        .switching-mode-group input[type="radio"]:checked + label {
+            background-color: #df691a;
+            color: white;
+            border-color: #df691a;
+            font-weight: bold;
+        }
+        .switching-mode-row {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            margin-bottom: 5px;
+        }
+        #atem_ip, #default_camera {
+            width: 120px;
+            max-width: 120px;
+        }
+
+        .output-container {
+            display: flex;
+            justify-content: flex-start;
+            gap: 10px;
+        }
+        .output-square {
+            width: 40px;
+            height: 40px;
+            border: 2px solid #555;
+            background-color: #333;
+            color: #b0b0b0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 18px;
+            font-weight: bold;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: transform 0.1s;
+        }
+        .output-square:active {
+            transform: scale(0.9);
+        }
+        .output-square.active {
+            background-color: #df691a;
+            color: white;
+            border-color: #df691a;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>TVPAS Camera Auto Switcher</h1>
+
+        <div class="setting-group">
+            <h2>Mode</h2>
+            <div class="switching-mode-group">
+                <div class="switching-mode-row">
+                    <input type="radio" id="mode_manual" name="switching_mode" value="Manual">
+                    <label for="mode_manual">Manual</label>
+                    <input type="radio" id="mode_auto" name="switching_mode" value="Auto">
+                    <label for="mode_auto">Auto</label>
+                </div>
+                <div class="switching-mode-row">
+                    <input type="radio" id="mode_pos1" name="switching_mode" value="Pos1">
+                    <label for="mode_pos1">Pos1</label>
+                    <input type="radio" id="mode_pos2" name="switching_mode" value="Pos2">
+                    <label for="mode_pos2">Pos2</label>
+                    <input type="radio" id="mode_pos3" name="switching_mode" value="Pos3">
+                    <label for="mode_pos3">Pos3</label>
+                    <input type="radio" id="mode_pos4" name="switching_mode" value="Pos4">
+                    <label for="mode_pos4">Pos4</label>
+                </div>
+                <div class="switching-mode-row">
+                    <input type="radio" id="mode_seat1" name="switching_mode" value="Seat1">
+                    <label for="mode_seat1">Seat1</label>
+                    <input type="radio" id="mode_seat2" name="switching_mode" value="Seat2">
+                    <label for="mode_seat2">Seat2</label>
+                    <input type="radio" id="mode_seat3" name="switching_mode" value="Seat3">
+                    <label for="mode_seat3">Seat3</label>
+                    <input type="radio" id="mode_seat4" name="switching_mode" value="Seat4">
+                    <label for="mode_seat4">Seat4</label>
+                </div>
+            </div>
+        </div>
+
+        <div class="setting-group">
+            <h2>OUTPUT</h2>
+            <div class="output-container">
+                <div class="output-square" id="output_1" onclick="manualSwitch(1)">1</div>
+                <div class="output-square" id="output_2" onclick="manualSwitch(2)">2</div>
+                <div class="output-square" id="output_3" onclick="manualSwitch(3)">3</div>
+                <div class="output-square" id="output_4" onclick="manualSwitch(4)">4</div>
+                <div class="output-square" id="output_5" onclick="manualSwitch(5)">5</div>
+                <div class="output-square" id="output_6" onclick="manualSwitch(6)">6</div>
+                <div class="output-square" id="output_7" onclick="manualSwitch(7)">7</div>
+                <div class="output-square" id="output_8" onclick="manualSwitch(8)">8</div>
+            </div>
+        </div>
+
+        <div class="setting-group">
+            <h2>Settings</h2>
+            <div class="setting-item">
+                <label for="atem_ip">ATEM IP ADDR.:</label>
+                <input type="text" id="atem_ip" placeholder="192.168.1.25">
+            </div>
+            <div class="setting-item">
+                <label for="default_camera">DEFAULT CAMERA:</label>
+                <input type="number" id="default_camera" min="1" max="8">
+            </div>
+            <div class="setting-item">
+                <p class="error-message" id="configErrorMessage"></p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const configForm = {
+            switchingModeRadios: document.querySelectorAll('input[name="switching_mode"]'),
+            atem_ip: document.getElementById('atem_ip'),
+            default_camera: document.getElementById('default_camera'),
+            errorMessage: document.getElementById('configErrorMessage')
+        };
+
+        async function loadConfig() {
+            try {
+                const response = await fetch('/api/atem/config');
+                const config = await response.json();
+                
+                configForm.switchingModeRadios.forEach(radio => {
+                    if (radio.value === config.mode) radio.checked = true;
+                });
+                configForm.atem_ip.value = config.ip || '';
+                configForm.default_camera.value = config.default_camera || 4;
+            } catch (error) {
+                console.error('Failed to load config:', error);
+            }
+        }
+
+        async function saveConfig() {
+            const selectedMode = document.querySelector('input[name="switching_mode"]:checked');
+            const newConfig = {
+                ip: configForm.atem_ip.value,
+                default_camera: parseInt(configForm.default_camera.value, 10),
+                mode: selectedMode ? selectedMode.value : 'Auto',
+                enabled: true
+            };
+
+            try {
+                await fetch('/api/atem/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(newConfig)
+                });
+                console.log('Settings auto-saved.');
+            } catch (error) {
+                console.error('Failed to auto-save settings.');
+            }
+        }
+
+        async function manualSwitch(inputNum) {
+            try {
+                await fetch('/api/atem/switch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ input: inputNum })
+                });
+                fetchStatus(); // 即座に状態を更新
+            } catch (error) {
+                console.error('Failed to switch input:', error);
+            }
+        }
+
+        async function fetchStatus() {
+            try {
+                const response = await fetch('/api/atem/status');
+                const status = await response.json();
+                const programCamera = status.program;
+
+                for (let i = 1; i <= 8; i++) {
+                    const square = document.getElementById(`output_${i}`);
+                    if (square) square.classList.remove('active');
+                }
+                if (programCamera > 0 && programCamera <= 8) {
+                    const activeSquare = document.getElementById(`output_${programCamera}`);
+                    if (activeSquare) activeSquare.classList.add('active');
+                }
+            } catch (error) {}
+        }
+
+        // イベントリスナーの追加
+        configForm.switchingModeRadios.forEach(radio => radio.addEventListener('change', saveConfig));
+        configForm.atem_ip.addEventListener('blur', saveConfig);
+        configForm.default_camera.addEventListener('change', saveConfig);
+
+        loadConfig();
+        setInterval(fetchStatus, 1000);
+    </script>
+</body>
+</html>

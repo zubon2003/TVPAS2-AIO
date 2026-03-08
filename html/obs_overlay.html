@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>Countdown Overlay</title>
+    <link href="https://fonts.googleapis.com/css2?family=Audiowide&display=swap" rel="stylesheet">
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+        body { margin: 0; padding: 0; background-color: transparent; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; font-family: 'Audiowide', cursive; color: white; }
+        #countdown { display: none; text-align: center; line-height: 1; z-index: 100; position: relative; }
+        .text-get-ready { font-size: 8rem; color: #00ffff; text-shadow: 0 0 20px #00ffff, 0 0 40px #00ffff; transform: skewX(-15deg); }
+        .text-count { font-size: 18rem; font-weight: bold; color: #ff00de; text-shadow: 0 0 20px #ff00de, 0 0 40px #ff00de; }
+        .text-count.c-3, .text-count.c-2, .text-count.c-1 { color: #ff3333; text-shadow: 0 0 20px #ff0000, 0 0 40px #ff0000; }
+        .text-go { font-size: 20rem; color: #39ff14; text-shadow: 0 0 40px #39ff14, 0 0 80px #39ff14; }
+        .anim-slide { animation: slide-in 0.4s ease-out forwards; }
+        @keyframes slide-in { 0% { transform: translateX(-30vw) skewX(-30deg); opacity: 0; } 100% { transform: translateX(0) skewX(-15deg); opacity: 1; } }
+        .anim-pop { animation: pop-zoom 0.5s ease-out forwards; }
+        @keyframes pop-zoom { 0% { transform: scale(1.5); opacity: 1; } 100% { transform: scale(1); opacity: 1; } }
+        .anim-explode { animation: explode 1.0s ease-out forwards; }
+        @keyframes explode { 0% { transform: scale(0.8); opacity: 1; } 100% { transform: scale(2.0); opacity: 0; } }
+        #cyber-circle-container { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 800px; height: 800px; pointer-events: none; display: none; align-items: center; justify-content: center; z-index: 10; }
+        .cyber-ring-segmented { position: absolute; width: 600px; height: 600px; border-radius: 50%; border: 30px dashed #00ffff; box-shadow: 0 0 30px #00ffff; animation: spin 10s linear infinite; opacity: 0.3; }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div id="cyber-circle-container"><div class="cyber-ring-segmented"></div></div>
+    <div id="countdown"></div>
+
+    <script>
+        const serverUrl = (location.protocol === 'file:') ? 'http://localhost:5050' : (location.protocol + '//' + location.host);
+        const socket = io(serverUrl);
+        const countdownEl = document.getElementById('countdown');
+        const cyberCircleEl = document.getElementById('cyber-circle-container');
+
+        let currentTargetTime = 0;
+        let countdownInterval = null;
+        let currentMode = "none";
+
+        function triggerAnimation(className) {
+            countdownEl.classList.remove('anim-pop', 'anim-slide', 'anim-explode');
+            void countdownEl.offsetWidth; 
+            countdownEl.classList.add(className);
+        }
+
+        socket.on("race_start", (data) => {
+            // 同じターゲット時刻への信号が連打された場合は、アニメーションを壊さないように無視
+            if (Math.abs(data.startTime - currentTargetTime) < 0.5) return;
+            currentTargetTime = data.startTime;
+            startCountdown(data.startTime);
+        });
+
+        function startCountdown(targetUnix) {
+            if (countdownInterval) clearInterval(countdownInterval);
+            let lastSec = -1;
+            currentMode = "none";
+            
+            countdownInterval = setInterval(() => {
+                const now = Date.now() / 1000;
+                const diff = targetUnix - now;
+                const secondsLeft = Math.ceil(diff);
+
+                // --- 重要：表示の同期制御 ---
+                
+                if (diff > 6.0) {
+                    // 6秒より前なら何も表示しない (GET READY 音声待機)
+                    countdownEl.style.display = 'none';
+                    currentMode = "none";
+                    return;
+                }
+
+                if (secondsLeft !== lastSec) {
+                    lastSec = secondsLeft;
+
+                    if (secondsLeft === 6) {
+                        // GET READY 音声タイミング (残り6秒)
+                        if (currentMode !== "ready") {
+                            currentMode = "ready";
+                            countdownEl.textContent = "GET READY";
+                            countdownEl.style.display = 'block';
+                            countdownEl.className = 'text-get-ready';
+                            triggerAnimation('anim-slide');
+                        }
+                    } else if (secondsLeft >= 1 && secondsLeft <= 5) {
+                        // 5, 4, 3, 2, 1 カウントダウン
+                        currentMode = "count";
+                        countdownEl.textContent = secondsLeft;
+                        countdownEl.style.display = 'block';
+                        countdownEl.className = `text-count c-${secondsLeft}`;
+                        triggerAnimation('anim-pop');
+                        cyberCircleEl.style.display = 'flex';
+                    } else if (secondsLeft === 0) {
+                        // GO!
+                        if (currentMode !== "go") {
+                            currentMode = "go";
+                            countdownEl.textContent = "GO!";
+                            countdownEl.className = 'text-go';
+                            triggerAnimation('anim-explode');
+                        }
+                    } else if (secondsLeft <= -2) {
+                        // 終了
+                        currentMode = "none";
+                        countdownEl.style.display = 'none';
+                        cyberCircleEl.style.display = 'none';
+                        currentTargetTime = 0;
+                        clearInterval(countdownInterval);
+                    }
+                }
+            }, 20);
+        }
+    </script>
+</body>
+</html>
