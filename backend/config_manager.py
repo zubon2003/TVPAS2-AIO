@@ -5,6 +5,15 @@ import threading
 class ConfigManager:
     def __init__(self, config_path="config.json"):
         self.config_path = config_path
+        
+        # FPVTracksideのパスを自動検出
+        local_app_data = os.environ.get("LOCALAPPDATA", "")
+        default_fpv_path = ""
+        if local_app_data:
+            detected_path = os.path.join(local_app_data, "FPVTrackside").replace("\\", "/")
+            if os.path.exists(detected_path):
+                default_fpv_path = detected_path
+
         self.config = {
             "global": {"web_ui_port": 5050, "drone_dashboard_port": 8089},
             "timer": {
@@ -13,27 +22,34 @@ class ConfigManager:
                 "target_fps": 60,
                 "aspect_ratio": "4:3",
                 "detect_mode": "Hybrid",
+                "view_mode": "Original",
                 "marker_system": "ArUco",
-                "stag_library": 15,
+                "stag_library": 21,
                 "marker_threshold": 2,
                 "flicker_length": 150,
                 "min_marker_percent": 0.1,
                 "error_correction_rate": 0.6,
-                "anti_flicker_method": "Simple",
-                "max_vector_dist": 100,
-                "use_absolute_timestamp": True # 絶対時刻(Monotonic秒)を使用する
+                "show_detection_info": True,
+                "show_fps": True,
+                "show_marker_rectangle": True,
+                "thread_count": 2,
+                "virtual_camera_enabled": False,
+                "camera_frequencies": [5705, 5740, 5800, 5820]
             },
             "relay": {
                 "server1_port": 5000, "server1_id": [0, 1, 2, 3],
                 "server2_port": 0, "server2_id": [],
                 "server3_port": 0, "server3_id": [],
-                "server4_port": 0, "server4_id": []
+                "server4_port": 0, "server4_id": [] ,
+                "espnow_compensation": 200,
+                "useComPort": False,
+                "comPort": "COM1"
             },
             "result_formatter": {
-                "fpvtrackside_dir_path": "",
-                "selected_event_id": "",
+                "fpvtrackside_dir_path": default_fpv_path,
                 "leaderboard_round": "all",
-                "sorted_by": "consecutive3Lap",
+                "sorted_by": "consecutive",
+                "consecutive_n": 3,
                 "generate_overlay": False,
                 "enable_spreadsheet_writing": False,
                 "google_spreadsheet_id": ""
@@ -65,9 +81,7 @@ class ConfigManager:
                 with open(self.config_path, 'r', encoding='utf-8') as f:
                     user_config = json.load(f); self._deep_update(self.config, user_config)
             except: pass
-        else:
-            # ファイルが存在しない場合はデフォルト値を保存
-            self.save()
+        else: self.save()
 
     def _deep_update(self, base, update):
         for k, v in update.items():

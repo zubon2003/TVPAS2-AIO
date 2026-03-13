@@ -14,8 +14,8 @@ class WebServer:
     def __init__(self, config_manager, relay_manager=None):
         self.config_manager = config_manager
         self.relay_manager = relay_manager
-        self.atem_manager = None # main.pyからセットされる
-        self.voice_manager = None # main.pyからセットされる
+        self.atem_manager = None 
+        self.voice_manager = None 
         self.result_manager = ResultManager(config_manager)
         self.log_callback = None
         self.result_manager.log_callback = self.log
@@ -105,14 +105,13 @@ class WebServer:
         if os.path.exists(self.public_dir): self.app.mount("/public", StaticFiles(directory=self.public_dir), name="public")
         
     def create_async_sio(self, port, role_name):
-        sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*', ping_timeout=20, ping_interval=10)
+        sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*', ping_timeout=60, ping_interval=25, allow_eio3=True)
         @sio.on('connect')
         async def connect(sid, environ):
             self.log("System", f"[{role_name}] Client connected: {sid}")
             if role_name != "web_ui":
                 await sio.emit('heartbeat', self.get_heartbeat_data(role_name), room=sid)
             else:
-                # 接続時に現在の全ステータスを送って同期
                 full_state = self.result_manager.get_realtime_state_all()
                 for pilot_data in full_state:
                     pilot_data["server_now"] = time.monotonic()
@@ -120,90 +119,93 @@ class WebServer:
 
         @sio.on('ts_server_info')
         async def server_info(sid, data=None):
+            self.log("System", f"[{role_name}] ts_server_info requested")
             return {"release_version": "4.0.0-TVPAS2-AIO", "node_fw_versions": ["1.1.4"] * 4, "prog_start_epoch": str(int(time.time() * 1000)), "prog_start_time": time.strftime("%Y-%m-%d %H:%M:%S")}
+        
         @sio.on('ts_server_time')
-        async def server_time(sid, data=None): return float(time.monotonic())
+        async def server_time(sid, data=None):
+            return float(time.monotonic())
+            
         @sio.on('ts_frequency_setup')
         async def frequency_setup(sid, data):
-            if self.relay_manager and role_name == "server1": self.relay_manager.on_frequency_setup(data)
-            if isinstance(data, dict) and 'f' in data and len(data['f']) > 0:
-                await sio.emit('frequency_set', {"node": 0, "frequency": data['f'][0]}, room=sid)
-            return True
+            self.log("System", f"[{role_name}] ts_frequency_setup received (Ignored)")
+            pass
+
         @sio.on('ts_race_stage')
         async def race_stage(sid, data):
-            self.log("RX", f"[{role_name}] ts_race_stage")
-            
-            # スタート時刻の算出 (Monotonic -> UNIX)
             try:
                 if isinstance(data, list) and len(data) > 0: d = data[0]
                 else: d = data
                 st_mono = float(d.get("start_time_s", time.monotonic() + 5)) if isinstance(d, dict) else (time.monotonic() + 5)
             except: st_mono = time.monotonic() + 5
             
-            # HTMLオーバーレイ向けの UNIX 開始時刻
+            self.log("System", f"[{role_name}] ts_race_stage received. Start at: {st_mono:.3f}")
+            self.result_manager.race_start_mono = st_mono
+            self.result_manager.is_race_active = True
+            
             st_unix = time.time() + (st_mono - time.monotonic())
-
             if role_name == "server1":
-                # 1. 最初にリセット信号を送り画面をクリア (startTimeを追加し、timeも維持)
                 for p, s in self.sio_servers.items():
                     if s["role"] == "web_ui": await s["sio"].emit("race_start", {"startTime": st_unix, "time": time.time()})
-                
-                # 2. 状態をリセットし、パケットから名前を解決
                 self.result_manager.reset_realtime_state()
+                self.result_manager.is_race_active = True
+                self.result_manager.race_start_mono = st_mono
                 if isinstance(data, list) and len(data) > 1:
                     self.result_manager.resolve_names_from_packet(data[1:])
-                
-                # 3. 名前入りの全状態をプッシュ
                 full_state = self.result_manager.get_realtime_state_all()
                 for p, s in self.sio_servers.items():
                     if s["role"] == "web_ui":
                         for pilot_data in full_state:
                             pilot_data["server_now"] = time.monotonic()
                             await s["sio"].emit('race_lap_update', pilot_data)
-
-            # 以降、スタート時刻処理
-            try:
-                if isinstance(data, list) and len(data) > 0: d = data[0]
-                else: d = data
-                st = float(d.get("start_time_s", time.monotonic() + 5)) if isinstance(d, dict) else (time.monotonic() + 5)
-                if role_name == "server1": self.result_manager.race_start_mono = st
-            except: st = time.monotonic() + 5
-            await sio.emit("stage_ready", {"pi_starts_at_s": st}, room=sid)
+            
+            await sio.emit("stage_ready", {"pi_starts_at_s": st_mono}, room=sid)
             if role_name == "server1":
                 if time.monotonic() - self.last_broadcast_time > 2.0:
                     self.last_broadcast_time = time.monotonic()
                     if self.relay_manager:
-                        if self.relay_manager.timer_manager: self.relay_manager.timer_manager.set_race_start_time(st)
-                        self.relay_manager.on_race_stage(st)
-                
-                # ATEM レース開始時切り替え
+                        if self.relay_manager.timer_manager: self.relay_manager.timer_manager.set_race_start_time(st_mono)
+                        self.relay_manager.on_race_stage(st_mono)
                 if self.atem_manager:
                     try: self.atem_manager.on_race_start()
                     except: pass
-
             return True
+
         @sio.on('ts_race_stop')
         async def race_stop(sid, data=None):
+            self.log("System", f"[{role_name}] ts_race_stop received")
             if role_name == "server1":
                 self.result_manager.reset_realtime_state()
-                for p, s in self.sio_servers.items():
-                    if s["role"] == "web_ui": await s["sio"].emit("race_reset", {})
-                
-                # ATEM レース終了時切り替え
                 if self.atem_manager:
                     try: self.atem_manager.on_race_end()
                     except: pass
-
+                
+                # 猶予期間後に自動更新を予約
+                def trigger_post_race_debounce():
+                    flk = (self.config_manager.get("timer", "flicker_length") or 150) / 1000.0
+                    time.sleep(flk + 0.1)
+                    if hasattr(self, 'processor') and self.processor:
+                        self.processor._trigger_update(immediate=False) # デバウンス経由で更新
+                threading.Thread(target=trigger_post_race_debounce, daemon=True).start()
+                
             if self.relay_manager: self.relay_manager.on_race_stop()
             return True
+
         @sio.on('ts_race_abort')
         async def race_abort(sid, data=None):
+            self.log("System", f"[{role_name}] ts_race_abort received")
             if role_name == "server1":
                 self.result_manager.reset_realtime_state()
-                for p, s in self.sio_servers.items():
-                    if s["role"] == "web_ui": await s["sio"].emit("race_reset", {})
+                # 中止時も同様
+                def trigger_post_race_debounce():
+                    flk = (self.config_manager.get("timer", "flicker_length") or 150) / 1000.0
+                    time.sleep(flk + 0.1)
+                    if hasattr(self, 'processor') and self.processor:
+                        self.processor._trigger_update(immediate=False)
+                threading.Thread(target=trigger_post_race_debounce, daemon=True).start()
             if self.relay_manager: self.relay_manager.on_race_stop()
             return True
+
         @sio.on('*')
         async def catch_all(event, sid, *args): pass
         return sio
@@ -216,99 +218,99 @@ class WebServer:
     def start_port(self, port, role_name):
         sio = self.create_async_sio(port, role_name)
         sio_app = socketio.ASGIApp(sio, self.app if role_name == "web_ui" else None)
-        self.sio_servers[port] = {"sio": sio, "role": role_name}
+        self.sio_servers[port] = {"sio": sio, "role": role_name, "loop": None}
         def run_uvicorn():
             loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
+            self.sio_servers[port]["loop"] = loop
             if role_name == "web_ui": self.loop = loop
             config = uvicorn.Config(sio_app, host="0.0.0.0", port=port, log_level="warning", access_log=False)
-            server = uvicorn.Server(config); loop.run_until_complete(server.serve())
+            server = uvicorn.Server(config)
+            loop.run_until_complete(server.serve())
         threading.Thread(target=run_uvicorn, daemon=True).start()
 
     def emit_lap(self, port, data):
-        internal_data = data.copy(); socket_data = data.copy()
+        now_abs = float(data.get("lap_time", time.monotonic()))
+        flk_len_s = (self.config_manager.get("timer", "flicker_length") or 150) / 1000.0
+        seat = data.get("seat", 0)
         
-        # Dashboard 向けに相対時間へ変換
+        # 1. レース中（開始後、かつ停止後+flicker経過前）のみ処理
+        is_started = now_abs >= self.result_manager.race_start_mono
+        is_within_grace = self.result_manager.is_race_active or (now_abs - self.result_manager.race_stop_time <= flk_len_s)
+        
+        if not is_started:
+            self.log("System", f"[Ignored] Seat {seat} detected BEFORE race start. (Now:{now_abs:.3f} < Start:{self.result_manager.race_start_mono:.3f})")
+            return
+            
+        if not is_within_grace:
+            self.log("System", f"[Ignored] Seat {seat} detected AFTER race grace period. (Elapsed:{now_abs - self.result_manager.race_stop_time:.3f}s > {flk_len_s:.3f}s)")
+            return
+
+        socket_data = data.copy()
         st = self.result_manager.race_start_mono
         if st > 0: socket_data["lap_time"] = float(socket_data["lap_time"]) - st
-        
         if "marker_id" in socket_data: socket_data.pop("marker_id")
-        if port in self.sio_servers and self.loop:
-            sio = self.sio_servers[port]["sio"]
-            async def do_emit(): await sio.emit('ts_lap_data', socket_data)
-            asyncio.run_coroutine_threadsafe(do_emit(), self.loop)
         
-        rt_update = self.result_manager.process_realtime_lap(port, internal_data)
+        # 2. 送信成功のログ（従来の TX カテゴリ）
+        self.log("TX", f"Lap to Port {port}: Seat {seat} @ {now_abs:.3f}")
+
+        if port in self.sio_servers:
+            s_info = self.sio_servers[port]
+            if s_info["loop"]:
+                async def do_emit(): await s_info["sio"].emit('ts_lap_data', socket_data)
+                asyncio.run_coroutine_threadsafe(do_emit(), s_info["loop"])
         
-        # ATEM切り替えのトリガー (RelayManagerは介さずここで行う)
-        if self.atem_manager and rt_update:
-            # port番号(5000-5003)からサーバーID(1-4)を算出
+        rt_update = self.result_manager.process_realtime_lap(port, data)
+        if not rt_update: return
+        
+        if self.atem_manager:
             try:
-                # サーバーのリストからインデックスを取得
                 ports = sorted([p for p, info in self.sio_servers.items() if info["role"].startswith("server")])
                 server_idx = ports.index(port) if port in ports else 0
-                self.atem_manager.on_lap_event(
-                    seat=server_idx, 
-                    server_id=server_idx + 1, 
-                    rank=rt_update.get("position", 4), 
-                    is_finished=rt_update.get("is_finished", False)
-                )
+                self.atem_manager.on_lap_event(seat=server_idx, server_id=server_idx + 1, rank=rt_update.get("position", 4), is_finished=rt_update.get("is_finished", False))
             except: pass
-
-        # 音声読み上げのトリガー
-        # event が "lap_update" (ゴールゲート通過) の時のみ読み上げる
-        if self.voice_manager and rt_update and rt_update.get("event") == "lap_update":
-            pilot_name = rt_update.get("pilot_name") or f"Player {server_idx + 1}"
-            laps = rt_update.get("lap_number", 0)
-            lap_time = rt_update.get("lap_time", 0.0)
-            total_time = sum(rt_update.get("history", []))
-            pos = rt_update.get("position", 0)
-            is_finished = rt_update.get("is_finished", False)
-
+        if self.voice_manager and rt_update.get("event") == "lap_update":
+            pilot_name = rt_update.get("pilot_name") or f"Player {rt_update.get('seat', 0) + 1}"
+            laps = rt_update.get("lap_number", 0); lap_time = rt_update.get("lap_time", 0.0); total_time = sum(rt_update.get("history", [])); pos = rt_update.get("position", 0); is_finished = rt_update.get("is_finished", False)
             if self.config_manager.get("voice", "read_pilot_name"):
                 speech_text = ""
-                if laps == 0:
-                    # Holeshot
-                    speech_text = f"{pilot_name}、スタート"
-                elif is_finished:
-                    # レース完走
-                    speech_text = f"{pilot_name}、ゴール！ トータル {total_time:.3f}秒、 {pos}位"
-                else:
-                    # 周回通過
-                    speech_text = f"{pilot_name}、ラップ {laps}、 {lap_time:.3f}秒"
-                
-                if speech_text:
-                    self.voice_manager.speak(speech_text)
-
-        if rt_update and self.loop:
+                if laps == 0: speech_text = f"{pilot_name}、スタート"
+                elif is_finished: speech_text = f"{pilot_name}、ゴール！ トータル {total_time:.3f}秒、 {pos}位"
+                else: speech_text = f"{pilot_name}、ラップ {laps}、 {lap_time:.3f}秒"
+                if speech_text: self.voice_manager.speak(speech_text)
+        if self.loop:
             for p, info in self.sio_servers.items():
                 if info["role"] == "web_ui":
-                    sio_web = info["sio"]
-                    async def do_web_emit(): await sio_web.emit('race_lap_update', rt_update)
+                    async def do_web_emit(): await info["sio"].emit('race_lap_update', rt_update)
                     asyncio.run_coroutine_threadsafe(do_web_emit(), self.loop)
 
     def trigger_leaderboard_refresh(self):
+        """Web UI (リーダーボード等) に対して強制リフレッシュを通知する"""
         if self.loop:
             for port, info in self.sio_servers.items():
                 if info["role"] == "web_ui":
-                    sio = info["sio"]
-                    async def do_emit(): await sio.emit('leaderboard_refresh', {"time": time.time()})
+                    async def do_emit(): await info["sio"].emit('leaderboard_refresh', {"time": time.time()})
                     asyncio.run_coroutine_threadsafe(do_emit(), self.loop)
 
     async def _heartbeat_worker(self):
         while self.running:
             try:
                 for port, info in self.sio_servers.items():
-                    if info["role"] != "web_ui": await info["sio"].emit('heartbeat', self.get_heartbeat_data(info["role"]))
+                    if info["role"] != "web_ui" and info["loop"]:
+                        data = self.get_heartbeat_data(info["role"])
+                        async def send_hb(s=info["sio"], d=data): await s.emit('heartbeat', d)
+                        asyncio.run_coroutine_threadsafe(send_hb(), info["loop"])
+                        if info["role"] == "server1":
+                            self.log("Heartbeat", f"Heartbeat emitted to Trackside ports.")
             except: pass
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(5.0)
 
     def start(self):
-        web_port = self.config_manager.get("global", "drone_dashboard_port_web") or 5050
+        web_port = self.config_manager.get("global", "web_ui_port") or 5050
         self.start_port(web_port, "web_ui")
         for i in range(1, 5):
             p = self.config_manager.get("relay", f"server{i}_port")
             if p and p > 0: self.start_port(p, f"server{i}")
-        def run_hb():
-            while self.loop is None: time.sleep(0.1)
-            asyncio.run_coroutine_threadsafe(self._heartbeat_worker(), self.loop)
-        threading.Thread(target=run_hb, daemon=True).start()
+        def run_hb_thread():
+            loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
+            loop.run_until_complete(self._heartbeat_worker())
+        threading.Thread(target=run_hb_thread, daemon=True).start()
