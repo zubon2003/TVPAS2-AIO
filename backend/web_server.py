@@ -21,9 +21,8 @@ class WebServer:
         self.result_manager.log_callback = self.log
         
         self.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self.static_dir = os.path.join(self.base_dir, "static")
-        self.public_dir = os.path.join(self.static_dir, "public")
         self.overlay_dir = os.path.join(self.base_dir, "html")
+        self.public_dir = os.path.join(self.base_dir, "static", "public")
         
         self.app = FastAPI()
         self.setup_fastapi_routes()
@@ -31,58 +30,35 @@ class WebServer:
         self.sio_servers = {} 
         self.loop = None
         self.running = True
+        self.processor = None
         self.last_broadcast_time = 0
 
     def log(self, category, message):
         if self.log_callback: self.log_callback(category, message)
 
-    def get_unix_offset(self): return time.time() - time.monotonic()
-    def get_system_frequencies(self): return self.config_manager.get("timer", "camera_frequencies") or [5705, 5800, 5845, 5885]
-
     def setup_fastapi_routes(self):
         @self.app.get('/')
         async def index(): return {"status": "online", "server": "TVPAS2-AIO"}
-        @self.app.get('/api/leaderboard')
-        async def get_lb(): return JSONResponse(self.result_manager.get_leaderboard_data())
+        
         @self.app.get('/api/pilot_image')
         async def get_pilot_image(path: str = None, id: str = None):
             fpv_root = self.config_manager.get("result_formatter", "fpvtrackside_dir_path")
             if path and path.strip():
                 p = os.path.normpath(path)
-                if os.path.exists(p) and os.path.isfile(p): return FileResponse(p)
                 if fpv_root:
                     clean_rel = path.replace("..\\", "").replace("../", "").strip("\\/")
-                    search_paths = [os.path.normpath(os.path.join(fpv_root, path)), os.path.normpath(os.path.join(fpv_root, clean_rel)), os.path.normpath(os.path.join(fpv_root, "Pilots", os.path.basename(path)))]
-                    for sp in search_paths:
+                    for sp in [os.path.normpath(os.path.join(fpv_root, path)), os.path.normpath(os.path.join(fpv_root, clean_rel)), os.path.normpath(os.path.join(fpv_root, "Pilots", os.path.basename(path)))]:
                         if os.path.exists(sp) and os.path.isfile(sp): return FileResponse(sp)
             fallback = os.path.join(self.overlay_dir, "image.png")
-            if not os.path.exists(fallback): fallback = os.path.join(self.public_dir, "image.png")
             return FileResponse(fallback)
-        @self.app.get('/leaderboard')
-        async def lb_page(): return FileResponse(os.path.join(self.overlay_dir, "leaderboard.html"))
-        @self.app.get('/heatresult')
-        async def hr_page(): return FileResponse(os.path.join(self.overlay_dir, "heatresult.html"))
-        @self.app.get('/nextheat')
-        async def nh_page(): return FileResponse(os.path.join(self.overlay_dir, "nextHeat.html"))
-        @self.app.get('/overlay')
-        async def ov_page(): return FileResponse(os.path.join(self.overlay_dir, "obs_overlay.html"))
-        @self.app.get('/race_feed')
-        async def rf_page(): return FileResponse(os.path.join(self.overlay_dir, "race_feed.html"))
-        @self.app.get('/atem')
-        async def atem_page(): return FileResponse(os.path.join(self.overlay_dir, "atem.html"))
-        
+
         @self.app.get('/api/atem/config')
-        async def get_atem_config():
-            return self.config_manager.get("atem")
+        async def get_atem_config(): return self.config_manager.get("atem")
         
         @self.app.post('/api/atem/config')
         async def set_atem_config(req: Request):
             data = await req.json()
-            for k, v in data.items():
-                self.config_manager.set("atem", k, v)
-            if self.atem_manager:
-                if data.get("enabled"): self.atem_manager.start()
-                else: self.atem_manager.stop()
+            for k, v in data.items(): self.config_manager.set("atem", k, v)
             return {"status": "success"}
 
         @self.app.get('/api/atem/status')
@@ -92,20 +68,19 @@ class WebServer:
 
         @self.app.post('/api/atem/switch')
         async def manual_atem_switch(req: Request):
-            data = await req.json()
-            input_num = data.get("input")
-            if self.atem_manager and input_num:
-                self.atem_manager.switch_to_input(input_num)
+            data = await req.json(); input_num = data.get("input")
+            if self.atem_manager and input_num: self.atem_manager.switch_to_input(input_num)
             return {"status": "success"}
 
-        @self.app.get('/image.png')
-        async def img1(): return FileResponse(os.path.join(self.overlay_dir, "image.png"))
-        @self.app.get('/image2.png')
-        async def img2(): return FileResponse(os.path.join(self.overlay_dir, "image2.png"))
+        @self.app.get('/overlay')
+        async def ov_page(): return FileResponse(os.path.join(self.overlay_dir, "obs_overlay.html"))
+        @self.app.get('/atem')
+        async def atem_page(): return FileResponse(os.path.join(self.overlay_dir, "atem.html"))
         if os.path.exists(self.public_dir): self.app.mount("/public", StaticFiles(directory=self.public_dir), name="public")
         
     def create_async_sio(self, port, role_name):
         sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*', ping_timeout=60, ping_interval=25, allow_eio3=True)
+        
         @sio.on('connect')
         async def connect(sid, environ):
             self.log("System", f"[{role_name}] Client connected: {sid}")
@@ -124,6 +99,7 @@ class WebServer:
         
         @sio.on('ts_server_time')
         async def server_time(sid, data=None):
+            self.log("RX", f"[{role_name}] ts_server_time requested")
             return float(time.monotonic())
             
         @sio.on('ts_frequency_setup')
@@ -133,6 +109,8 @@ class WebServer:
 
         @sio.on('ts_race_stage')
         async def race_stage(sid, data):
+            if self.config_manager.get("global", "debug_mode"):
+                self.log("Debug", f"[{role_name}] ts_race_stage RAW DATA: {json.dumps(data, ensure_ascii=False)}")
             try:
                 if isinstance(data, list) and len(data) > 0: d = data[0]
                 else: d = data
@@ -150,8 +128,15 @@ class WebServer:
                 self.result_manager.reset_realtime_state()
                 self.result_manager.is_race_active = True
                 self.result_manager.race_start_mono = st_mono
-                if isinstance(data, list) and len(data) > 1:
+                
+                # パイロット情報の解析
+                if isinstance(data, dict):
+                    self.result_manager.resolve_names_from_packet(data)
+                elif isinstance(data, list) and len(data) > 1:
+                    if self.config_manager.get("global", "debug_mode"):
+                        self.log("Debug", f"[{role_name}] Pilot data found: {json.dumps(data[1:], ensure_ascii=False)}")
                     self.result_manager.resolve_names_from_packet(data[1:])
+                
                 full_state = self.result_manager.get_realtime_state_all()
                 for p, s in self.sio_servers.items():
                     if s["role"] == "web_ui":
@@ -171,44 +156,33 @@ class WebServer:
                     except: pass
             return True
 
+        @sio.on('*')
+        async def catch_all(event, sid, data=None):
+            if event not in ['ts_server_time', 'heartbeat']: # 頻度の高いものは除外
+                if self.config_manager.get("global", "debug_mode"):
+                    self.log("Debug", f"[{role_name}] Event '{event}' RAW DATA: {json.dumps(data, ensure_ascii=False)}")
+
+
         @sio.on('ts_race_stop')
         async def race_stop(sid, data=None):
-            self.log("System", f"[{role_name}] ts_race_stop received")
+            self.log("RX", f"[{role_name}] ts_race_stop received")
             if role_name == "server1":
-                self.result_manager.reset_realtime_state()
-                if self.atem_manager:
-                    try: self.atem_manager.on_race_end()
-                    except: pass
-                
-                # 猶予期間後に自動更新を予約
-                def trigger_post_race_debounce():
-                    flk = (self.config_manager.get("timer", "flicker_length") or 150) / 1000.0
-                    time.sleep(flk + 0.1)
-                    if hasattr(self, 'processor') and self.processor:
-                        self.processor._trigger_update(immediate=False) # デバウンス経由で更新
-                threading.Thread(target=trigger_post_race_debounce, daemon=True).start()
-                
+                self.result_manager.is_race_active = False
+                if self.atem_manager: self.atem_manager.on_race_end()
+                if self.processor: self.processor._trigger_debounce(immediate=True)
             if self.relay_manager: self.relay_manager.on_race_stop()
             return True
 
         @sio.on('ts_race_abort')
         async def race_abort(sid, data=None):
-            self.log("System", f"[{role_name}] ts_race_abort received")
-            if role_name == "server1":
-                self.result_manager.reset_realtime_state()
-                # 中止時も同様
-                def trigger_post_race_debounce():
-                    flk = (self.config_manager.get("timer", "flicker_length") or 150) / 1000.0
-                    time.sleep(flk + 0.1)
-                    if hasattr(self, 'processor') and self.processor:
-                        self.processor._trigger_update(immediate=False)
-                threading.Thread(target=trigger_post_race_debounce, daemon=True).start()
+            self.log("RX", f"[{role_name}] ts_race_abort received")
+            if role_name == "server1": self.result_manager.is_race_active = False
             if self.relay_manager: self.relay_manager.on_race_stop()
             return True
-
-        @sio.on('*')
-        async def catch_all(event, sid, *args): pass
         return sio
+
+    def get_system_frequencies(self):
+        return self.config_manager.get("timer", "camera_frequencies") or [5705, 5740, 5800, 5820]
 
     def get_heartbeat_data(self, role_name="server1"):
         all_freqs = self.get_system_frequencies()
@@ -224,8 +198,7 @@ class WebServer:
             self.sio_servers[port]["loop"] = loop
             if role_name == "web_ui": self.loop = loop
             config = uvicorn.Config(sio_app, host="0.0.0.0", port=port, log_level="warning", access_log=False)
-            server = uvicorn.Server(config)
-            loop.run_until_complete(server.serve())
+            server = uvicorn.Server(config); loop.run_until_complete(server.serve())
         threading.Thread(target=run_uvicorn, daemon=True).start()
 
     def emit_lap(self, port, data):
@@ -252,7 +225,6 @@ class WebServer:
         
         # 2. 送信成功のログ（従来の TX カテゴリ）
         self.log("TX", f"Lap to Port {port}: Seat {seat} @ {now_abs:.3f}")
-
         if port in self.sio_servers:
             s_info = self.sio_servers[port]
             if s_info["loop"]:
@@ -260,31 +232,34 @@ class WebServer:
                 asyncio.run_coroutine_threadsafe(do_emit(), s_info["loop"])
         
         rt_update = self.result_manager.process_realtime_lap(port, data)
-        if not rt_update: return
-        
-        if self.atem_manager:
-            try:
-                ports = sorted([p for p, info in self.sio_servers.items() if info["role"].startswith("server")])
-                server_idx = ports.index(port) if port in ports else 0
-                self.atem_manager.on_lap_event(seat=server_idx, server_id=server_idx + 1, rank=rt_update.get("position", 4), is_finished=rt_update.get("is_finished", False))
-            except: pass
-        if self.voice_manager and rt_update.get("event") == "lap_update":
-            pilot_name = rt_update.get("pilot_name") or f"Player {rt_update.get('seat', 0) + 1}"
-            laps = rt_update.get("lap_number", 0); lap_time = rt_update.get("lap_time", 0.0); total_time = sum(rt_update.get("history", [])); pos = rt_update.get("position", 0); is_finished = rt_update.get("is_finished", False)
-            if self.config_manager.get("voice", "read_pilot_name"):
-                speech_text = ""
-                if laps == 0: speech_text = f"{pilot_name}、スタート"
-                elif is_finished: speech_text = f"{pilot_name}、ゴール！ トータル {total_time:.3f}秒、 {pos}位"
-                else: speech_text = f"{pilot_name}、ラップ {laps}、 {lap_time:.3f}秒"
-                if speech_text: self.voice_manager.speak(speech_text)
-        if self.loop:
-            for p, info in self.sio_servers.items():
-                if info["role"] == "web_ui":
-                    async def do_web_emit(): await info["sio"].emit('race_lap_update', rt_update)
-                    asyncio.run_coroutine_threadsafe(do_web_emit(), self.loop)
+        if rt_update: self.process_final_emit(rt_update)
 
-    def trigger_leaderboard_refresh(self):
-        """Web UI (リーダーボード等) に対して強制リフレッシュを通知する"""
+    def process_final_emit(self, update_data):
+        if not update_data: return
+        if self.atem_manager:
+            try: self.atem_manager.on_lap_event(seat=update_data.get("seat"), server_id=update_data.get("server", 1), rank=update_data.get("position", 4), is_finished=update_data.get("is_finished", False))
+            except: pass
+        
+        if self.voice_manager and self.config_manager.get("voice", "enabled"):
+            p_name = update_data.get("pilot_name") or f"パイロット {update_data.get('seat', 0) + 1}"
+            txt = ""
+            event = update_data.get("event")
+            
+            if event == "lap_update":
+                laps = update_data.get("lap_number", 0)
+                if laps == 0: txt = f"{p_name}、スタート"
+                elif update_data.get("is_finished"): txt = f"{p_name}、ゴール！トータル {update_data.get('total_time', 0):.2f}秒"
+                else: txt = f"{p_name}、{laps}周目、{update_data.get('lap_time', 0):.2f}秒"
+            elif event == "sector_update":
+                # セクター通過時はオプションで鳴らすようにしても良いが、現状はログのみ、または短い音
+                # ユーザーの要望に合わせて調整可能。ここでは一旦 lap_update のみとするが、
+                # デバッグ用に speak が呼ばれているか確認するためのログを追加
+                pass
+
+            if txt:
+                self.log("Voice", f"Speech Request: {txt}")
+                self.voice_manager.speak(txt)
+        
         if self.loop:
             for port, info in self.sio_servers.items():
                 if info["role"] == "web_ui":

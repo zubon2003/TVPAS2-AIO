@@ -69,18 +69,21 @@ class SheetsManager:
         ]
 
         try:
-            # --- STEP 1: 全シートの既存の縞模様を個別に削除 (Node.js 互換) ---
-            # メタデータを再取得
-            meta = doc.fetch_sheet_metadata()
-            del_banding_reqs = []
-            for s_meta in meta.get('sheets', []):
-                for br in s_meta.get('bandedRanges', []):
-                    del_banding_reqs.append({"deleteBanding": {"bandedRangeId": br['bandedRangeId']}})
+            # --- STEP 1: 全シートの既存の縞模様を確実に削除 ---
+            # 最新のメタデータを取得して既存の bandedRangeId をすべて抽出
+            doc_meta = doc.fetch_sheet_metadata()
+            delete_requests = []
+            for sheet_meta in doc_meta.get('sheets', []):
+                for br in sheet_meta.get('bandedRanges', []):
+                    delete_requests.append({"deleteBanding": {"bandedRangeId": br['bandedRangeId']}})
             
-            if del_banding_reqs:
-                doc.batch_update({"requests": del_banding_reqs})
-                # 短い待機を入れて反映を確実にする
-                time.sleep(0.5)
+            if delete_requests:
+                try:
+                    doc.batch_update({"requests": delete_requests})
+                    # サーバー側の反映を待つために少し長めに待機
+                    time.sleep(1.0)
+                except Exception as e:
+                    self.log(f"Warning: Failed to delete some bandings: {e}")
 
             # --- STEP 2: 各シートのデータを更新 ---
             for cfg in configs:
@@ -96,13 +99,13 @@ class SheetsManager:
                 s_id = sheet.id
                 requests = []
 
-                # セルのクリアと基本設定
+                # セルのクリア（値とフォーマットの両方）
                 requests.append({"updateCells": {"range": {"sheetId": s_id}, "fields": "userEnteredValue,userEnteredFormat"}})
                 requests.append({"updateSheetProperties": {"properties": {"sheetId": s_id, "index": cfg["index"]}, "fields": "index"}})
                 
                 start_row = 0
                 if sheet_name != "RaceResult":
-                    # タイトル行
+                    # タイトル行の設定
                     requests.append({
                         "updateCells": {
                             "rows": [{"values": [{"userEnteredValue": {"stringValue": sheet_name}, "userEnteredFormat": {"textFormat": {"fontSize": 14, "bold": True}, "horizontalAlignment": "CENTER"}}]}],
@@ -113,7 +116,7 @@ class SheetsManager:
                     requests.append({"mergeCells": {"range": {"sheetId": s_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": 4}, "mergeType": "MERGE_ALL"}})
                     start_row = 2
 
-                # ヘッダー (red:0.4 グレー, 文字白, 太字, 右揃え)
+                # ヘッダー行の設定
                 requests.append({
                     "updateCells": {
                         "rows": [{"values": [{"userEnteredValue": {"stringValue": h}, "userEnteredFormat": {"backgroundColor": {"red": 0.4, "green": 0.4, "blue": 0.4}, "textFormat": {"bold": True, "foregroundColor": {"red": 1, "green": 1, "blue": 1}}, "horizontalAlignment": "RIGHT"}} for h in header]}],
@@ -122,7 +125,7 @@ class SheetsManager:
                     }
                 })
 
-                # データ書き込み
+                # データ行の構築
                 if rows:
                     sheet_data_rows = []
                     for row in rows:
@@ -132,7 +135,7 @@ class SheetsManager:
                             if isinstance(cell, (int, float)):
                                 val["userEnteredValue"]["numberValue"] = float(cell)
                                 if sheet_name == "RaceResult":
-                                    if c_idx == 2: val["userEnteredFormat"]["numberFormat"] = {"type": "DATE", "pattern": "yyyy-mm-dd"}
+                                    if c_idx == 2: val["userEnteredFormat"]["numberFormat"] = {"type": "DATE", "pattern": "yyyy/mm/dd"}
                                     elif c_idx == 3: val["userEnteredFormat"]["numberFormat"] = {"type": "TIME", "pattern": "hh:mm:ss"}
                                     elif 7 <= c_idx <= 42: val["userEnteredFormat"]["numberFormat"] = {"type": "NUMBER", "pattern": "0.000"}
                                 elif c_idx == 2:
@@ -150,7 +153,7 @@ class SheetsManager:
                         }
                     })
 
-                    # 新しい縞模様を追加
+                    # 新規バンディング設定を追加 (既存の削除後なので安全)
                     requests.append({
                         "addBanding": {
                             "bandedRange": {
@@ -163,7 +166,7 @@ class SheetsManager:
                         }
                     })
 
-                # 固定行と列幅
+                # 行固定と列幅の設定
                 requests.append({"updateSheetProperties": {"properties": {"sheetId": s_id, "gridProperties": {"frozenRowCount": start_row + 1}}, "fields": "gridProperties.frozenRowCount"}})
                 
                 if sheet_name == "RaceResult":
@@ -176,14 +179,17 @@ class SheetsManager:
                     for i, w in enumerate(widths):
                         requests.append({"updateDimensionProperties": {"range": {"sheetId": s_id, "dimension": "COLUMNS", "startIndex": i, "endIndex": i+1}, "properties": {"pixelSize": w}, "fields": "pixelSize"}})
 
-                # 外枠
+                # 外枠の設定 (RaceResult以外)
                 if sheet_name != "RaceResult":
                     border = {"style": "SOLID", "width": 1}
                     requests.append({"updateBorders": {"range": {"sheetId": s_id, "startRowIndex": 0, "endRowIndex": start_row + 1 + len(rows), "startColumnIndex": 0, "endColumnIndex": 4}, "top": border, "bottom": border, "left": border, "right": border}})
 
+                # 最終的な一括更新
                 doc.batch_update({"requests": requests})
 
             self.log(f"Spreadsheets updated successfully (Node.js style matched).")
+        except Exception as e:
+            self.log(f"Spreadsheet Error: {e}")
         except Exception as e:
             self.log(f"Spreadsheet Error: {e}")
 

@@ -14,10 +14,8 @@ TVPAS2-AIO は、FPVTracksideのタイミングシステムとして、ARマー�
 - **GUI**:
   - すべての設定は、GUIから変更可能で、基本的に、config.jsonなどの設定ファイルをテキストエディタで書き換える必要がなくなった。
 - **OBS オーバーレイ(Experimental)**: 
-  - リアルタイムレースフィード(現在行われているレースの状況をリアルタイム表示・セクタータイムも表示)
   - カウントダウン機能（標準のFPVTracksideでは難しかったカウントダウンスタートに対応）
-  - 特定のラウンドのみを対象としたランキング表の出力
-  - レース結果/次のレースの紹介ページを表示
+
 - **外部連携**:
   - **Google スプレッドシート**: レース結果の集計をGoogle Spreadsheetに書き込み
   - **レーススタート・ラップ通過・フィニッシュ時の日本語音声による読み上げ**: 標準に加えVoiceBoxによるナレーションに対応
@@ -61,7 +59,7 @@ credentials.json(今まで使っていたもので大丈夫)をstart.bat等の�
 1. **TIMER**: カメラの選択、解像度、検知モード（Hybrid推奨）を設定します。
 2. **RELAY**: 送信先のポートやID割り当てを設定します。
 3. **ATEM**: ATEMスイッチャーのIPアドレスと自動切り替えモードを設定します。
-4. **RESULT**: FPVTracksideのパス設定、集計ソート順、OBSオーバーレイのリンク取得が可能です。
+4. **RESULT**: FPVTracksideのパスを設定します。
 5. **VOICE**: 音声読み上げのエンジン（VOICEVOX 等）を選択します。
 6. **SHEETS**: 書き込み先のスプレッドシートIDを設定します。
 
@@ -71,4 +69,4 @@ credentials.json(今まで使っていたもので大丈夫)をstart.bat等の�
 - **License**: MIT License
 
 ---
-*Powered by TinyViewPlus technology.*
+*Powered by TinyViewPlus(t-asano) technology.*

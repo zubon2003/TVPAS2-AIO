@@ -1,6 +1,8 @@
 import os
 import time
 import threading
+import requests
+import json
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -10,98 +12,110 @@ class DataProcessor(FileSystemEventHandler):
         self.web = web_server
         self.sheets = sheets_manager
         self.observer = None
-        self._lock = threading.Lock()
         self.running = False
-        
-        self._last_event_time = 0 # 最後に変化が起きた時刻
-        self._update_pending = False # 更新待ちフラグ
-        self._last_finished_heat_count = -1
-
-    def on_modified(self, event):
-        if event.src_path.endswith(".json"):
-            self._trigger_debounce()
-
-    def _trigger_debounce(self):
-        """更新予約を入れる。2秒ルールを開始する。"""
-        # レース中は自動更新を避ける
-        if self.web.result_manager.is_race_active:
-            return
-            
-        with self._lock:
-            self._last_event_time = time.time()
-            if not self._update_pending:
-                self._update_pending = True
-                threading.Thread(target=self._debounce_worker, daemon=True).start()
-
-    def _debounce_worker(self):
-        """2秒間変化がないことを監視して実行する"""
-        while True:
-            time.sleep(0.5)
-            now = time.time()
-            with self._lock:
-                if (now - self._last_event_time) >= 2.0:
-                    self._update_pending = False
-                    self._perform_full_update()
-                    break
-
-    def _trigger_update(self, immediate=False):
-        if immediate:
-            threading.Thread(target=self._perform_full_update, daemon=True).start()
-        else:
-            self._trigger_debounce()
-
-    def _perform_full_update(self):
-        print(f"[{time.strftime('%H:%M:%S')}] Executing Full Update (Overlays & Sheets)...")
-        # 内部キャッシュの強制更新
-        if not self.web.result_manager.update_all():
-            return
-            
-        self.web.trigger_leaderboard_refresh()
-        
-        if self.config_manager.get("result_formatter", "enable_spreadsheet_writing"):
-            try:
-                data_dict = self.web.result_manager.get_all_sheets_data()
-                if data_dict:
-                    self.sheets.update_all_ranking_sheets(data_dict)
-            except Exception as e:
-                if self.sheets.log_callback: self.sheets.log_callback("Sheet", f"Update Error: {e}")
+        self._lock = threading.Lock()
+        self._last_event_time = 0
+        self._pending_update = False
 
     def start(self):
-        # WebServer に自分自身を登録 (逆参照用)
-        self.web.processor = self
-        
-        try:
-            base_dir = self.config_manager.get("result_formatter", "fpvtrackside_dir_path")
-            if base_dir and os.path.exists(base_dir):
-                events_dir = base_dir
-                if os.path.basename(base_dir).lower() != "events":
-                    p = os.path.join(base_dir, "Events")
-                    if os.path.exists(p): events_dir = p
-                
-                self.observer = Observer()
-                self.observer.schedule(self, events_dir, recursive=True)
-                self.observer.start()
-                print(f"[Processor] Activity monitoring started: {events_dir}")
-        except Exception as e:
-            print(f"[Processor] Failed to start observer: {e}")
-        
         self.running = True
-        threading.Thread(target=self._pb_monitor_loop, daemon=True).start()
+        path = self.config_manager.get("result_formatter", "fpvtrackside_dir_path")
+        if path and os.path.exists(path):
+            self.observer = Observer()
+            self.observer.schedule(self, path, recursive=True)
+            self.observer.start()
+        
+        # リアルタイム公式ラップ監視 (SSE方式)
+        threading.Thread(target=self._official_lap_realtime_listener, daemon=True).start()
+        # スプレッドシート更新用スレッド
+        threading.Thread(target=self._debounce_worker, daemon=True).start()
 
-    def _pb_monitor_loop(self):
+    def _official_lap_realtime_listener(self):
+        """PocketBase の公式ラップを SSE でリアルタイム検知する"""
+        base_url = self.web.result_manager.pb_base_url.replace("/api", "")
+        realtime_url = f"{base_url}/api/realtime"
+        
         while self.running:
             try:
-                # レース中でない時だけ PocketBase の変化を監視
-                if not self.web.result_manager.is_race_active:
-                    races = self.web.result_manager.fetch_pb("races", params={"perPage": 500})
-                    finished_races = [r for r in races if self.web.result_manager.is_race_finished(r)]
-                    current_count = len(finished_races)
-                    if self._last_finished_heat_count == -1: self._last_finished_heat_count = current_count
-                    if current_count != self._last_finished_heat_count:
-                        self._last_finished_heat_count = current_count
-                        self._trigger_debounce()
-            except: pass
-            time.sleep(2.0)
+                self.web.log("System", "Connecting to PocketBase Realtime...")
+                resp = requests.get(realtime_url, stream=True, timeout=120)
+                client_id = None
+                
+                for line in resp.iter_lines():
+                    if not self.running: break
+                    if not line: continue
+                    line_str = line.decode('utf-8').strip()
+                    
+                    if line_str.startswith('data:'):
+                        raw_data = line_str.replace('data:', '').strip()
+                        if not raw_data: continue
+                        
+                        try:
+                            data = json.loads(raw_data)
+                        except: continue
+
+                        # 1. 接続完了時の clientId 取得と購読
+                        if not client_id and "clientId" in data:
+                            client_id = data["clientId"]
+                            sub_resp = requests.post(realtime_url, json={"clientId": client_id, "subscriptions": ["laps/*"]}, timeout=5)
+                            if sub_resp.status_code == 204 or sub_resp.status_code == 200:
+                                self.web.log("System", f"PocketBase Realtime Connected. (ID: {client_id})")
+                            else:
+                                self.web.log("System", f"PocketBase Subscription Failed: {sub_resp.status_code}")
+                        
+                        # 2. ラップ生成・更新イベントの処理
+                        elif data.get("action") in ["create", "update"] and data.get("record"):
+                            # 公式ラップ確定・修正時のアクション実行
+                            official_update = self.web.result_manager.process_official_lap(data.get("record", {}))
+                            # update の場合は既に処理済み(processed_official_laps)であっても、
+                            # タイムが変わっている可能性があるため、スプレッドシートの更新をトリガーする
+                            if official_update:
+                                self.web.log("System", f"Official Lap {data.get('action')}: {official_update.get('pilot_name')} Lap {official_update.get('lap_number')}")
+                                self.web.process_final_emit(official_update)
+                            else:
+                                # process_official_lap が None を返した場合（既にIDが登録済みの場合など）でも、
+                                # action が 'update' ならスプレッドシートの再集計を行う
+                                if data.get("action") == "update":
+                                    self.web.log("System", "Lap updated in PocketBase. Triggering spreadsheet refresh.")
+                                    self._trigger_debounce()
+            except Exception as e:
+                self.web.log("System", f"PocketBase Realtime Error: {e}")
+                time.sleep(2.0)
+
+    def _debounce_worker(self):
+        """スプレッドシートの遅延更新処理"""
+        while self.running:
+            with self._lock:
+                # レース中でない場合のみ、保留中の更新を実行
+                if self._pending_update and not self.web.result_manager.is_race_active:
+                    if time.time() - self._last_event_time >= 2.0:
+                        self._pending_update = False
+                        threading.Thread(target=self._perform_full_update, daemon=True).start()
+            time.sleep(0.5)
+
+    def on_modified(self, event):
+        if not event.is_directory and event.src_path.endswith('.json'):
+            self._trigger_debounce()
+
+    def _trigger_debounce(self, immediate=False):
+        # レース中は自動更新を予約しない
+        if self.web.result_manager.is_race_active and not immediate: return
+        if immediate:
+            threading.Thread(target=self._perform_full_update, daemon=True).start()
+            return
+        with self._lock:
+            self._last_event_time = time.time()
+            self._pending_update = True
+
+    def _perform_full_update(self):
+        """実際に PocketBase と Sheets を更新する"""
+        # 二重チェック: レースが始まっていたら中止
+        if self.web.result_manager.is_race_active: return
+        
+        if not self.web.result_manager.update_all(): return
+        if self.config_manager.get("result_formatter", "enable_spreadsheet_writing"):
+            data = self.web.result_manager.get_all_sheets_data()
+            if data: self.sheets.update_all_ranking_sheets(data)
 
     def stop(self):
         self.running = False

@@ -115,7 +115,7 @@ class IntegratedLapTimerApp(QMainWindow):
             if not self.log_filters[cat].isChecked(): return
         ts = time.strftime("%H:%M:%S")
         if not ui_ready: return
-        colors = {"System": "#ffffff", "RX": "#5bc0de", "TX": "#f0ad4e", "Timer": "#00ff00", "Relay": "#ff00ff", "ATEM": "#df691a", "Voice": "#ffcc00", "Heartbeat": "#666666"}
+        colors = {"System": "#ffffff", "RX": "#5bc0de", "TX": "#f0ad4e", "Timer": "#00ff00", "Relay": "#ff00ff", "ATEM": "#df691a", "Voice": "#ffcc00", "Debug": "#888888", "Heartbeat": "#666666"}
         color = colors.get(cat, "#ffffff")
         self.log_area.appendHtml(f'<span style="color:gray">[{ts}]</span> <span style="color:{color}">[{cat}]</span> {msg}')
         self.log_area.moveCursor(QTextCursor.MoveOperation.End)
@@ -124,17 +124,103 @@ class IntegratedLapTimerApp(QMainWindow):
     def on_timer_heartbeat(self, status): pass
 
     def init_ui(self):
+        # モダンダークテーマ QSS
+        self.setStyleSheet("""
+            QMainWindow { background-color: #121212; }
+            QWidget { background-color: #121212; color: #e0e0e0; font-family: 'Inter', 'Segoe UI', sans-serif; font-size: 10pt; }
+            
+            /* タブメニュー */
+            QTabWidget::pane { border: 1px solid #333; background: #1a1a1a; margin-top: -1px; }
+            QTabBar::tab { background: #252525; color: #888; padding: 8px 12px; border: 1px solid #333; border-bottom: none; border-top-left-radius: 4px; border-top-right-radius: 4px; margin-right: 2px; }
+            QTabBar::tab:selected { background: #1a1a1a; color: #df691a; border-bottom: 2px solid #df691a; font-weight: bold; }
+            QTabBar::tab:hover { background: #303030; }
+
+            /* グループボックス */
+            QGroupBox { border: 1px solid #333; border-radius: 6px; margin-top: 1.2em; padding-top: 10px; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; color: #df691a; }
+            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }
+
+            /* ボタン */
+            QPushButton { background-color: #333; border: none; padding: 8px 15px; border-radius: 4px; color: white; font-weight: bold; }
+            QPushButton:hover { background-color: #444; border: 1px solid #df691a; }
+            QPushButton:pressed { background-color: #df691a; }
+            QPushButton#btn_show_cam { background-color: #df691a; }
+            QPushButton#btn_show_cam:hover { background-color: #f07a2a; }
+
+            /* 入力項目 */
+            QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { background-color: #252525; border: 1px solid #333; border-radius: 4px; padding: 5px; color: #fff; }
+            QLineEdit:focus, QComboBox:focus { border: 1px solid #df691a; }
+            QComboBox::drop-down { border: none; }
+            
+            /* 無効（グレーアウト）表示 */
+            QWidget:disabled { color: #555; background-color: #1a1a1a; border-color: #222; }
+            QPushButton:disabled { background-color: #222; color: #444; border: 1px solid #222; }
+            QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled { background-color: #151515; color: #444; border: 1px solid #222; }
+            
+            /* ログエリア */
+            QPlainTextEdit { background-color: #0a0a0a; border: 1px solid #333; border-radius: 4px; selection-background-color: #df691a; }
+            
+            /* チェックボックス */
+            QCheckBox::indicator { width: 18px; height: 18px; border: 1px solid #444; border-radius: 3px; background: #252525; }
+            QCheckBox::indicator:checked { background: #df691a; border-color: #df691a; }
+            QCheckBox::indicator:checked:pressed { background: #f07a2a; }
+
+            /* チェックマークの代わり（OS標準のインジケータを活かすか、文字で表現） */
+            QCheckBox::indicator:unchecked:hover { border: 1px solid #df691a; }
+
+            /* ラジオボタン */
+            QRadioButton::indicator { width: 16px; height: 16px; border: 1px solid #444; border-radius: 8px; background: #252525; }
+            QRadioButton::indicator:checked { background: #df691a; border: 3px solid #252525; }
+
+            /* 無効（グレーアウト）表示 */
+            QWidget:disabled { color: #555; background-color: #1a1a1a; border-color: #222; }
+            QPushButton:disabled { background-color: #222; color: #444; border: 1px solid #222; }
+            QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled { background-color: #151515; color: #444; border: 1px solid #222; }
+        """)
+
         self.central_widget = QWidget(); self.setCentralWidget(self.central_widget); self.main_layout = QVBoxLayout(self.central_widget)
-        header = QHBoxLayout(); title = QLabel("TVPAS2-AIO"); title.setFont(QFont("Orbitron", 18, QFont.Weight.Bold)); title.setStyleSheet("color: #df691a;"); header.addWidget(title); header.addStretch()
-        self.fps_label = QLabel("FPS: 0.0"); self.fps_label.setFont(QFont("Consolas", 12, QFont.Weight.Bold)); self.fps_label.setStyleSheet("color: #00ff00;"); header.addWidget(self.fps_label)
-        self.btn_show_cam = QPushButton("Show Camera"); self.btn_show_cam.setFixedWidth(120); self.btn_show_cam.clicked.connect(self.toggle_camera_window); header.addWidget(self.btn_show_cam); self.main_layout.addLayout(header)
+        header = QHBoxLayout()
+        
+        # タイトルロゴ
+        title = QLabel("TVPAS2-AIO")
+        title.setFont(QFont("Orbitron", 22, QFont.Weight.Bold))
+        title.setStyleSheet("color: #df691a; letter-spacing: 2px; background: transparent;")
+        header.addWidget(title)
+        
+        header.addStretch()
+        
+        # FPS表示
+        self.fps_label = QLabel("FPS: 0.0")
+        self.fps_label.setFont(QFont("Consolas", 12, QFont.Weight.Bold))
+        self.fps_label.setStyleSheet("color: #00ff00; background: #1a1a1a; padding: 5px 15px; border-radius: 10px; border: 1px solid #333;")
+        header.addWidget(self.fps_label)
+        
+        self.btn_show_cam = QPushButton("Show Camera")
+        self.btn_show_cam.setObjectName("btn_show_cam") # スタイル適用用
+        self.btn_show_cam.setFixedWidth(120)
+        self.btn_show_cam.clicked.connect(self.toggle_camera_window)
+        header.addWidget(self.btn_show_cam)
+        
+        self.main_layout.addLayout(header)
         self.tabs = QTabWidget(); self.main_layout.addWidget(self.tabs)
         self.create_timer_tab(); self.create_relay_tab(); self.create_atem_tab(); self.create_result_tab(); self.create_voice_tab(); self.create_sheets_tab()
+        
         log_group = QGroupBox(" System Logs "); log_layout = QVBoxLayout(log_group)
-        filter_layout = QHBoxLayout(); self.log_filters = {}
-        for cat in ["System", "RX", "TX", "Timer", "Relay", "Voice", "Heartbeat"]:
-            cb = QCheckBox(cat); cb.setChecked(cat != "Heartbeat"); self.log_filters[cat] = cb; filter_layout.addWidget(cb)
-        filter_layout.addStretch(); log_layout.addLayout(filter_layout)
+        self.log_filters = {}
+        
+        # フィルター行 1
+        filter_layout1 = QHBoxLayout()
+        for cat in ["System", "RX", "TX", "Timer"]:
+            cb = QCheckBox(cat); cb.setChecked(True); self.log_filters[cat] = cb; filter_layout1.addWidget(cb)
+        filter_layout1.addStretch(); log_layout.addLayout(filter_layout1)
+        
+        # フィルター行 2
+        filter_layout2 = QHBoxLayout()
+        for cat in ["Relay", "Voice", "ATEM", "Debug", "Heartbeat"]:
+            cb = QCheckBox(cat); cb.setChecked(cat == "Debug" if self.config.get("global", "debug_mode") else (cat != "Heartbeat" and cat != "Debug"))
+            if cat == "Debug": cb.toggled.connect(lambda v: self.config.set("global", "debug_mode", v))
+            self.log_filters[cat] = cb; filter_layout2.addWidget(cb)
+        filter_layout2.addStretch(); log_layout.addLayout(filter_layout2)
+
         self.log_area = QPlainTextEdit(); self.log_area.setReadOnly(True); self.log_area.setFont(QFont("Consolas", 9)); self.log_area.setStyleSheet("background-color: #1e1e1e; color: #ebebeb;"); log_layout.addWidget(self.log_area); self.main_layout.addWidget(log_group, 1)
         self.video_win = VideoWindow()
         self.start_go_backend()
@@ -153,7 +239,8 @@ class IntegratedLapTimerApp(QMainWindow):
 
     def update_mode_states(self):
         res, aspect = self.combo_res.currentText(), self.combo_aspect.currentText()
-        is_supported = (aspect == "4:3") and (res in ["1280x720", "1920x1080"])
+        # 960x720, 1440x1080 も補正モードを許可
+        is_supported = (aspect == "4:3") and (res in ["960x720", "1440x1080", "1280x720", "1920x1080"])
         self.combo_detect.setEnabled(is_supported)
         for btn in self.view_grp.buttons(): btn.setEnabled(is_supported)
         if not is_supported:
@@ -167,12 +254,21 @@ class IntegratedLapTimerApp(QMainWindow):
         target_cam = self.config.get("timer", "target_camera_name"); self.combo_cam.blockSignals(True); self.combo_cam.setCurrentText(target_cam); self.combo_cam.blockSignals(False)
         self.combo_cam.currentTextChanged.connect(lambda t: (self.config.set("timer", "target_camera_name", t), self.update_camera_formats(), self.timer_mgr.restart()))
         cam_row.addWidget(self.combo_cam, 1); layout.addLayout(cam_row)
-        fmt_row = QHBoxLayout(); fmt_row.addWidget(QLabel("Format:")); self.combo_res = QComboBox(); fmt_row.addWidget(self.combo_res); fmt_row.addWidget(QLabel("FPS:")); self.combo_fps = QComboBox(); fmt_row.addWidget(self.combo_fps); fmt_row.addWidget(QLabel("Aspect:")); self.combo_aspect = QComboBox(); self.combo_aspect.addItems(["16:9", "4:3"]); fmt_row.addWidget(self.combo_aspect); layout.addLayout(fmt_row)
+        # フォーマット行 1
+        fmt_row1 = QHBoxLayout(); fmt_row1.addWidget(QLabel("Format:")); self.combo_res = QComboBox(); fmt_row1.addWidget(self.combo_res, 1); fmt_row1.addWidget(QLabel("FPS:")); self.combo_fps = QComboBox(); fmt_row1.addWidget(self.combo_fps, 1)
+        layout.addLayout(fmt_row1)
+        
+        # フォーマット行 2
+        fmt_row2 = QHBoxLayout(); fmt_row2.addWidget(QLabel("Aspect:")); self.combo_aspect = QComboBox(); self.combo_aspect.addItems(["16:9", "4:3"]); fmt_row2.addWidget(self.combo_aspect, 1)
+        layout.addLayout(fmt_row2)
+
         self.combo_aspect.blockSignals(True); self.combo_aspect.setCurrentText(self.config.get("timer", "aspect_ratio") or "16:9"); self.combo_aspect.blockSignals(False)
         self.combo_res.currentTextChanged.connect(lambda t: (self.config.set("timer", "resolution", t), self.update_camera_formats(), self.timer_mgr.restart(), self.update_mode_states()) if t else None)
         self.combo_fps.currentTextChanged.connect(lambda t: (self.config.set("timer", "target_fps", int(t)), self.timer_mgr.restart()) if t else None)
         self.combo_aspect.currentTextChanged.connect(lambda t: (self.config.set("timer", "aspect_ratio", t), self.timer_mgr.restart(), self.update_mode_states()))
-        row2 = QHBoxLayout(); row2.addWidget(QLabel("Detect Mode:")); self.combo_detect = QComboBox(); self.combo_detect.addItems(["Original", "Corrected", "Hybrid"]); row2.addWidget(self.combo_detect); row2.addWidget(QLabel("Threads:")); self.combo_threads = QComboBox(); self.combo_threads.addItems(["2", "4"]); row2.addWidget(self.combo_threads); layout.addLayout(row2)
+        
+        row2 = QHBoxLayout(); row2.addWidget(QLabel("Detect:")); self.combo_detect = QComboBox(); self.combo_detect.addItems(["Original", "Corrected", "Hybrid"]); row2.addWidget(self.combo_detect, 1); row2.addWidget(QLabel("Threads:")); self.combo_threads = QComboBox(); self.combo_threads.addItems(["2", "4"]); row2.addWidget(self.combo_threads, 1); layout.addLayout(row2)
+
         self.combo_detect.setCurrentText(self.config.get("timer", "detect_mode") or "Hybrid"); self.combo_threads.setCurrentText(str(self.config.get("timer", "thread_count") or "2"))
         self.combo_detect.currentTextChanged.connect(lambda t: self.config.set("timer", "detect_mode", t))
         self.combo_threads.currentTextChanged.connect(lambda t: self.config.set("timer", "thread_count", int(t)))
@@ -191,12 +287,21 @@ class IntegratedLapTimerApp(QMainWindow):
         self.chk_mkr = QCheckBox("Marker"); self.chk_mkr.setChecked(self.config.get("timer", "show_marker_rectangle") is not False); self.chk_mkr.toggled.connect(lambda v: self.config.set("timer", "show_marker_rectangle", v))
         for c in [self.chk_det, self.chk_fps, self.chk_mkr]: ov_r.addWidget(c)
         out_l.addLayout(ov_r); layout.addWidget(out_g)
-        r4 = QHBoxLayout(); r4.addWidget(QLabel("Maker Num Threshold:")); self.spin_thr = QSpinBox(); self.spin_thr.setRange(1, 10); self.spin_thr.setValue(self.config.get("timer", "marker_threshold") or 2); r4.addWidget(self.spin_thr)
-        r4.addWidget(QLabel("Size(%):")); self.spin_size = QDoubleSpinBox(); self.spin_size.setRange(0.0, 10.0); self.spin_size.setSingleStep(0.01); self.spin_size.setValue(self.config.get("timer", "min_marker_percent") or 0.1); r4.addWidget(self.spin_size)
-        r4.addWidget(QLabel("Flicker(ms):")); self.spin_flk = QSpinBox(); self.spin_flk.setRange(0, 2000); self.spin_flk.setValue(self.config.get("timer", "flicker_length") or 150); r4.addWidget(self.spin_flk)
-        r4.addWidget(QLabel("Hybrid Dist:")); self.spin_h_dist = QSpinBox(); self.spin_h_dist.setRange(1, 100); self.spin_h_dist.setValue(self.config.get("timer", "hybrid_dist_threshold") or 20); self.spin_h_dist.valueChanged.connect(lambda v: self.config.set("timer", "hybrid_dist_threshold", v)); r4.addWidget(self.spin_h_dist)
-        r4.addWidget(QLabel("ArUco Error Corr:")); self.spin_ecr = QDoubleSpinBox(); self.spin_ecr.setRange(0.0, 1.0); self.spin_ecr.setSingleStep(0.05); self.spin_ecr.setValue(self.config.get("timer", "error_correction_rate") or 0.6); self.spin_ecr.valueChanged.connect(lambda v: self.config.set("timer", "error_correction_rate", v)); r4.addWidget(self.spin_ecr)
-        layout.addLayout(r4); layout.addStretch(); self.tabs.addTab(tab, "TIMER"); self.update_camera_formats()
+        
+        # しきい値設定行 1
+        r4_1 = QHBoxLayout()
+        r4_1.addWidget(QLabel("Marker Num:")); self.spin_thr = QSpinBox(); self.spin_thr.setRange(1, 10); self.spin_thr.setValue(self.config.get("timer", "marker_threshold") or 2); r4_1.addWidget(self.spin_thr)
+        r4_1.addWidget(QLabel("Size(%):")); self.spin_size = QDoubleSpinBox(); self.spin_size.setRange(0.0, 10.0); self.spin_size.setSingleStep(0.01); self.spin_size.setValue(self.config.get("timer", "min_marker_percent") or 0.1); r4_1.addWidget(self.spin_size)
+        r4_1.addWidget(QLabel("Flicker(ms):")); self.spin_flk = QSpinBox(); self.spin_flk.setRange(0, 2000); self.spin_flk.setValue(self.config.get("timer", "flicker_length") or 150); r4_1.addWidget(self.spin_flk)
+        layout.addLayout(r4_1)
+
+        # しきい値設定行 2
+        r4_2 = QHBoxLayout()
+        r4_2.addWidget(QLabel("Hybrid Dist:")); self.spin_h_dist = QSpinBox(); self.spin_h_dist.setRange(1, 100); self.spin_h_dist.setValue(self.config.get("timer", "hybrid_dist_threshold") or 20); self.spin_h_dist.valueChanged.connect(lambda v: self.config.set("timer", "hybrid_dist_threshold", v)); r4_2.addWidget(self.spin_h_dist)
+        r4_2.addWidget(QLabel("ArUco Corr:")); self.spin_ecr = QDoubleSpinBox(); self.spin_ecr.setRange(0.0, 1.0); self.spin_ecr.setSingleStep(0.05); self.spin_ecr.setValue(self.config.get("timer", "error_correction_rate") or 0.6); self.spin_ecr.valueChanged.connect(lambda v: self.config.set("timer", "error_correction_rate", v)); r4_2.addWidget(self.spin_ecr)
+        layout.addLayout(r4_2)
+
+        layout.addStretch(); self.tabs.addTab(tab, "TIMER"); self.update_camera_formats()
 
     def create_relay_tab(self):
         tab = QWidget(); layout = QVBoxLayout(tab)
@@ -220,7 +325,8 @@ class IntegratedLapTimerApp(QMainWindow):
     def create_atem_tab(self):
         tab = QWidget(); layout = QVBoxLayout(tab); g = QGroupBox(" ATEM Switcher Settings "); l = QVBoxLayout(g)
         self.chk_atem = QCheckBox("Enable ATEM Control"); self.chk_atem.setChecked(self.config.get("atem", "enabled") or False); l.addWidget(self.chk_atem)
-        ip_row = QHBoxLayout(); ip_row.addWidget(QLabel("ATEM IP Address:")); self.edit_atem_ip = QLineEdit(self.config.get("atem", "ip") or "192.168.1.25"); self.edit_atem_ip.editingFinished.connect(lambda: self.config.set("atem", "ip", self.edit_atem_ip.text())); ip_row.addWidget(self.edit_atem_ip); l.addLayout(ip_row)
+        ip_row = QHBoxLayout(); ip_row.addWidget(QLabel("ATEM IP:")); self.edit_atem_ip = QLineEdit(self.config.get("atem", "ip") or "127.0.0.1"); self.edit_atem_ip.editingFinished.connect(lambda: self.config.set("atem", "ip", self.edit_atem_ip.text())); ip_row.addWidget(self.edit_atem_ip)
+        ip_row.addWidget(QLabel("Port:")); self.spin_atem_port = QSpinBox(); self.spin_atem_port.setRange(1, 65535); self.spin_atem_port.setValue(self.config.get("atem", "port") or 8888); self.spin_atem_port.valueChanged.connect(lambda v: self.config.set("atem", "port", v)); ip_row.addWidget(self.spin_atem_port); l.addLayout(ip_row)
         mode_row = QHBoxLayout(); mode_row.addWidget(QLabel("Switching Mode:")); self.combo_atem_mode = QComboBox(); self.combo_atem_mode.addItems(["Manual", "Auto", "Pos1", "Pos2", "Pos3", "Pos4", "Seat1", "Seat2", "Seat3", "Seat4"]); self.combo_atem_mode.setCurrentText(self.config.get("atem", "mode") or "Auto"); self.combo_atem_mode.currentTextChanged.connect(lambda t: self.config.set("atem", "mode", t)); mode_row.addWidget(self.combo_atem_mode); l.addLayout(mode_row)
         def_row = QHBoxLayout(); def_row.addWidget(QLabel("Default Camera Input:")); self.spin_atem_def = QSpinBox(); self.spin_atem_def.setRange(1, 8); self.spin_atem_def.setValue(self.config.get("atem", "default_camera") or 4); self.spin_atem_def.valueChanged.connect(lambda v: self.config.set("atem", "default_camera", v)); def_row.addWidget(self.spin_atem_def); l.addLayout(def_row)
         self.chk_atem.toggled.connect(lambda v: (self.config.set("atem", "enabled", v), self.atem.start() if v else self.atem.stop())); layout.addWidget(g)
@@ -231,24 +337,10 @@ class IntegratedLapTimerApp(QMainWindow):
         tab = QWidget(); layout = QVBoxLayout(tab)
         port_row = QHBoxLayout(); port_row.addWidget(QLabel("Drone Dashboard Port:")); self.spin_pb_port = QSpinBox(); self.spin_pb_port.setRange(1024, 65535); self.spin_pb_port.setValue(self.config.get("global", "drone_dashboard_port") or 8089); self.spin_pb_port.valueChanged.connect(lambda v: self.config.set("global", "drone_dashboard_port", v)); port_row.addWidget(self.spin_pb_port); port_row.addStretch(); layout.addLayout(port_row)
         path_row = QHBoxLayout(); path_row.addWidget(QLabel("FPVTrackside Path:")); self.edit_path = QLineEdit(self.config.get("result_formatter", "fpvtrackside_dir_path") or ""); path_row.addWidget(self.edit_path); btn_browse = QPushButton("..."); btn_browse.setFixedWidth(40); btn_browse.clicked.connect(self.browse_path); path_row.addWidget(btn_browse); layout.addLayout(path_row)
-        row2 = QHBoxLayout(); row2.addWidget(QLabel("Round:")); self.combo_round = QComboBox(); self.combo_round.addItem("All", "all"); self.combo_round.currentTextChanged.connect(self.on_round_changed); row2.addWidget(self.combo_round, 1); layout.addLayout(row2)
-        row3 = QHBoxLayout(); row3.addWidget(QLabel("Sort By:")); self.combo_sort = QComboBox(); sort_options = [("Best Lap", "bestLap"), ("Consecutive (N)", "consecutive"), ("First Lap (N)", "firstLap"), ("Total Race (HS+N)", "totalRace"), ("Total Laps", "totalLaps")]
-        for label, val in sort_options: self.combo_sort.addItem(label, val)
-        idx = self.combo_sort.findData(self.config.get("result_formatter", "sorted_by") or "consecutive"); self.combo_sort.setCurrentIndex(idx if idx >= 0 else 1); self.combo_sort.currentTextChanged.connect(lambda t: self.config.set("result_formatter", "sorted_by", self.combo_sort.currentData())); row3.addWidget(self.combo_sort, 1)
-        row3.addWidget(QLabel("N:")); self.spin_consec = QSpinBox(); self.spin_consec.setRange(2, 10); self.spin_consec.setValue(self.config.get("result_formatter", "consecutive_n") or 3); self.spin_consec.valueChanged.connect(lambda v: self.config.set("result_formatter", "consecutive_n", v)); row3.addWidget(self.spin_consec); layout.addLayout(row3)
         ov_g = QGroupBox(" Overlay Links "); ov_l = QVBoxLayout(ov_g); chk_r = QHBoxLayout(); self.ov_chks = {}; k, l = ("Countdown Voice", "countdown_voice"); cb = QCheckBox(k); cb.setChecked(self.config.get("result_formatter", l) or False); cb.toggled.connect(lambda v, key=l: self.config.set("result_formatter", key, v)); self.ov_chks[l] = cb; chk_r.addWidget(cb); ov_l.addLayout(chk_r); btn_r = QHBoxLayout()
-        for l, p in [("Leaderboard", "leaderboard"), ("Result", "heatresult"), ("Next", "nextheat"), ("Start", "overlay"), ("Race Feed", "race_feed")]:
+        for l, p in [("Start", "overlay")]:
             b = QPushButton(l); b.clicked.connect(lambda chk, path=p: self.open_url(path)); btn_r.addWidget(b)
-        ov_l.addLayout(btn_r); layout.addWidget(ov_g); layout.addStretch(); self.tabs.addTab(tab, "RESULT"); QTimer.singleShot(2000, self.update_result_ui_choices)
-
-    def on_round_changed(self, text): self.config.set("result_formatter", "leaderboard_round", self.combo_round.currentData())
-    def update_result_ui_choices(self):
-        try:
-            rounds = self.web.result_manager.get_round_list(); self.combo_round.blockSignals(True); self.combo_round.clear(); curr = self.config.get("result_formatter", "leaderboard_round") or "all"
-            for r in rounds: self.combo_round.addItem(r["name"], r["id"]); 
-            if r["id"] == curr: self.combo_round.setCurrentIndex(self.combo_round.count()-1)
-            self.combo_round.blockSignals(False)
-        except: pass
+        ov_l.addLayout(btn_r); layout.addWidget(ov_g); layout.addStretch(); self.tabs.addTab(tab, "RESULT")
 
     def create_voice_tab(self):
         tab = QWidget(); layout = QVBoxLayout(tab); g = QGroupBox(" TTS Settings "); l = QVBoxLayout(g)
@@ -263,7 +355,7 @@ class IntegratedLapTimerApp(QMainWindow):
         tab = QWidget(); layout = QVBoxLayout(tab); g = QGroupBox(" Google Spreadsheet Integration "); l = QVBoxLayout(g)
         self.chk_sheet = QCheckBox("Enable Spreadsheet Writing"); self.chk_sheet.setChecked(self.config.get("result_formatter", "enable_spreadsheet_writing") or False); l.addWidget(self.chk_sheet)
         id_row = QHBoxLayout(); id_row.addWidget(QLabel("Spreadsheet ID:")); self.edit_sheet_id = QLineEdit(self.config.get("result_formatter", "google_spreadsheet_id") or ""); self.edit_sheet_id.editingFinished.connect(lambda: self.config.set("result_formatter", "google_spreadsheet_id", self.edit_sheet_id.text())); id_row.addWidget(self.edit_sheet_id); l.addLayout(id_row)
-        self.btn_sheet_update = QPushButton("Update Sheets Now"); self.btn_sheet_update.setFixedHeight(40); self.btn_sheet_update.setStyleSheet("background-color: #df691a; color: white; font-weight: bold;"); self.btn_sheet_update.clicked.connect(lambda: self.processor._trigger_update(immediate=True)); l.addWidget(self.btn_sheet_update)
+        self.btn_sheet_update = QPushButton("Update Sheets Now"); self.btn_sheet_update.setFixedHeight(40); self.btn_sheet_update.setStyleSheet("background-color: #df691a; color: white; font-weight: bold;"); self.btn_sheet_update.clicked.connect(lambda: self.processor._trigger_debounce(immediate=True)); l.addWidget(self.btn_sheet_update)
         self.btn_sheet_open = QPushButton("Open Spreadsheet"); self.btn_sheet_open.setFixedHeight(40); self.btn_sheet_open.clicked.connect(self.open_spreadsheet); l.addWidget(self.btn_sheet_open)
         self.chk_sheet.toggled.connect(lambda v: (self.config.set("result_formatter", "enable_spreadsheet_writing", v), self.btn_sheet_update.setEnabled(v), self.btn_sheet_open.setEnabled(v))); layout.addWidget(g); layout.addStretch(); self.tabs.addTab(tab, "SHEETS")
 
@@ -289,7 +381,7 @@ class IntegratedLapTimerApp(QMainWindow):
 
     def browse_path(self):
         p = QFileDialog.getExistingDirectory(self, "Select FPVTrackside Directory")
-        if p: p = os.path.normpath(p).replace("\\", "/"); self.edit_path.setText(p); self.config.set("result_formatter", "fpvtrackside_dir_path", p); self.update_result_ui_choices()
+        if p: p = os.path.normpath(p).replace("\\", "/"); self.edit_path.setText(p); self.config.set("result_formatter", "fpvtrackside_dir_path", p)
 
     def open_spreadsheet(self):
         sid = self.config.get("result_formatter", "google_spreadsheet_id")

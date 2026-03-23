@@ -36,9 +36,11 @@ class VoiceManager:
         self.executor = ThreadPoolExecutor(max_workers=4)
         
         try:
-            pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+            if not pygame.mixer.get_init():
+                pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+                self.log("Voice", "Pygame mixer initialized.")
         except Exception as e:
-            print(f"Failed to initialize pygame mixer: {e}")
+            self.log("Voice", f"Failed to initialize pygame mixer: {e}")
         
         self.playback_thread = threading.Thread(target=self._worker, daemon=True)
         self.playback_thread.start()
@@ -55,12 +57,14 @@ class VoiceManager:
             try:
                 # 再生リクエストを取得
                 item = self.msg_queue.get(timeout=0.5)
+                self.log("Voice", f"Processing queue item: {item.get('text') or item.get('content_text') or 'Data'}")
                 
                 # アイテムが「生成中」のFutureオブジェクトである場合、完了を待つ
                 if "future" in item:
                     # APIの応答を待機
                     audio_item = item["future"].result()
                     if not audio_item:
+                        self.log("Voice", "API generation failed (Future returned None).")
                         self.msg_queue.task_done()
                         continue
                     item = audio_item
@@ -70,11 +74,14 @@ class VoiceManager:
                 
                 if item["type"] == "data": # VOICEVOX
                     try:
+                        self.log("Voice", "Playing VOICEVOX data via pygame.")
                         sound = pygame.mixer.Sound(io.BytesIO(item["content"]))
                         channel = sound.play()
                         if channel:
                             while channel.get_busy() and self.running:
                                 time.sleep(0.01)
+                        else:
+                            self.log("Voice", "Failed to get playback channel.")
                     except Exception as e:
                         self.log("Voice", f"Pygame play error: {e}")
                 
@@ -82,13 +89,13 @@ class VoiceManager:
                     if HAS_PYTTSX3:
                         if HAS_PYTHONCOM: pythoncom.CoInitialize()
                         try:
+                            self.log("Voice", f"Speaking via pyttsx3: {text}")
                             tmp_engine = pyttsx3.init()
                             speed = self.config_manager.get("voice", "speed") or 1.0
                             vol = self.config_manager.get("voice", "volume") or 1.0
                             tmp_engine.setProperty('rate', int(150 * speed))
                             tmp_engine.setProperty('volume', vol)
                             
-                            self.log("Voice", f"Speaking: {text}")
                             tmp_engine.say(text)
                             tmp_engine.runAndWait()
                             del tmp_engine
@@ -96,6 +103,8 @@ class VoiceManager:
                             self.log("Voice", f"pyttsx3 error: {e}")
                         finally:
                             if HAS_PYTHONCOM: pythoncom.CoUninitialize()
+                    else:
+                        self.log("Voice", "pyttsx3 not available.")
                 
                 self.msg_queue.task_done()
                 
@@ -106,10 +115,14 @@ class VoiceManager:
 
     def speak(self, text):
         """読み上げリクエスト。エンジンに応じて即座に生成を開始する"""
-        if not self.config_manager.get("voice", "enabled") or not text:
+        is_enabled = self.config_manager.get("voice", "enabled")
+        self.log("Voice", f"Speak requested: '{text}' (Enabled: {is_enabled})")
+        
+        if not is_enabled or not text:
             return
         
         engine_type = self.config_manager.get("voice", "engine") or "pyttsx3"
+        self.log("Voice", f"Engine: {engine_type}")
         
         if engine_type == "voicevox":
             # 裏側で並列生成を開始し、その予約票(Future)を再生キューに入れる

@@ -79,23 +79,52 @@ class TimerManager:
         else: print(f"[{cat}] {msg}")
 
     def _setup_calibration(self):
-        cal_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "camera_calibration.json")
+        # backend/timer_manager.py から見て一つ上のディレクトリ(release/)にあるファイルを指す
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        cal_path = os.path.normpath(os.path.join(base_dir, "camera_calibration.json"))
+        
         if not os.path.exists(cal_path):
-            self.log("System", f"Calibration file not found at {cal_path}")
+            self.log("System", f"CRITICAL: Calibration file NOT FOUND at: {cal_path}")
             return
+            
         try:
-            with open(cal_path, 'r') as f: cal = json.load(f)
-            orig_mtx = np.array(cal['mtx']); dist = np.array(cal['dist']); cal_res = cal.get('resolution', [720, 960]); cal_h, cal_w = float(cal_res[0]), float(cal_res[1])
-            targets = [(640, 480), (800, 600), (960, 720), (1024, 768), (1280, 720), (1280, 960), (1440, 1080), (1920, 1080)]
-            for tw, th in targets:
-                qw, qh = tw // 2, th // 2; mtx = orig_mtx.copy(); scale_x = qw / cal_w; scale_y = qh / cal_h
-                mtx[0, 0] *= scale_x; mtx[1, 1] *= scale_y; mtx[0, 2] *= scale_x; mtx[1, 2] *= scale_y
-                new_mtx, _ = cv2.getOptimalNewCameraMatrix(mtx, dist, (qw, qh), 1, (qw, qh))
-                mx, my = cv2.initUndistortRectifyMap(mtx, dist, None, new_mtx, (qw, qh), cv2.CV_32FC1)
-                self.calib_cache[(tw, th)] = (mx, my)
-            self.log("System", f"Calibration loaded for resolutions: {[f'{k[0]}x{k[1]}' for k in self.calib_cache.keys()]}")
+            with open(cal_path, 'r', encoding='utf-8') as f:
+                cal = json.load(f)
+            self.orig_mtx = np.array(cal['mtx'])
+            self.orig_dist = np.array(cal['dist'])
+            cal_res = cal.get('resolution', [720, 960]) # [H, W]
+            self.cal_h, self.cal_w = float(cal_res[0]), float(cal_res[1])
+            self.log("System", f"Calibration reference loaded successfully from {cal_path}. Base res: {int(self.cal_w)}x{int(self.cal_h)}")
         except Exception as e:
-            self.log("System", f"Error loading calibration: {e}")
+            self.log("System", f"CRITICAL: Failed to parse calibration file: {e}")
+
+    def get_maps_for_res(self, tw, th):
+        """指定された解像度用の補正マップを取得または生成する"""
+        if not hasattr(self, 'orig_mtx'): return None, None
+        key = (tw, th)
+        if key in self.calib_cache: return self.calib_cache[key]
+        
+        self.log("System", f"Generating calibration map for {tw}x{th}...")
+        try:
+            qw, qh = tw // 2, th // 2
+            mtx = self.orig_mtx.copy()
+            # 基準解像度からのスケーリング
+            scale_x = tw / self.cal_w
+            scale_y = th / self.cal_h
+            
+            # クォーターサイズ用に行列を調整
+            mtx[0, 0] *= (scale_x * 0.5); mtx[1, 1] *= (scale_y * 0.5)
+            mtx[0, 2] *= (scale_x * 0.5); mtx[1, 2] *= (scale_y * 0.5)
+            
+            new_mtx, _ = cv2.getOptimalNewCameraMatrix(mtx, self.orig_dist, (qw, qh), 1, (qw, qh))
+            mx, my = cv2.initUndistortRectifyMap(mtx, self.orig_dist, None, new_mtx, (qw, qh), cv2.CV_32FC1)
+            
+            self.calib_cache[key] = (mx, my)
+            self.log("System", f"SUCCESS: Generated calibration map for {tw}x{th} (Quad: {qw}x{qh})")
+            return mx, my
+        except Exception as e:
+            self.log("System", f"ERROR: Failed to generate map for {tw}x{th}: {e}")
+            return None, None
 
     def _load_or_create_aruco_dict(self):
         dict_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "aruco_dict_0_3.json")
@@ -124,7 +153,7 @@ class TimerManager:
         return 0
 
     def get_camera_formats(self, camera_name):
-        formats = {"1920x1080": [30, 60], "1280x720": [30, 60, 90, 120], "960x720": [30, 60], "640x480": [30, 60, 90, 120]}
+        formats = {"1920x1080": [30, 60], "1440x1080": [30, 60], "1280x720": [30, 60, 90, 120], "960x720": [30, 60], "640x480": [30, 60, 90, 120]}
         if HAS_DSHOW:
             try:
                 graph = FilterGraph(); device_index = self.find_camera_id(camera_name); graph.add_video_input_device(device_index)
@@ -140,6 +169,9 @@ class TimerManager:
 
     def restart(self):
         self.log("System", "TimerManager: Restarting services...")
+        # サービス再起動時にキャリブレーション設定を再読み込み
+        self._setup_calibration()
+        
         with self.lock:
             if hasattr(self, 'executor'): self.executor.shutdown(wait=False)
             if self.grabber: self.grabber.stop(); self.grabber = None
@@ -212,21 +244,35 @@ class TimerManager:
             if w != target_w:
                 frame = cv2.resize(frame, (target_w, h), interpolation=cv2.INTER_AREA)
 
-        h, w = frame.shape[:2]; qw, qh = w//2, h//2; area_1_4 = qw*qh
+        h, w = frame.shape[:2]
+        # 補正マップを動的に取得/生成 (ここで確実に取得する)
+        mx, my = self.get_maps_for_res(w, h)
+        
+        # クォーターサイズの決定 (マップがあればそのサイズ、なければ単純二分割)
+        if mx is not None:
+            qw, qh = mx.shape[1], mx.shape[0]
+        else:
+            qw, qh = w // 2, h // 2
+            
+        area_1_4 = qw * qh
         m_sys = self.config_manager.get("timer", "marker_system") or "Stag"
         m_thr = self.config_manager.get("timer", "marker_threshold") or 2
         flk_len = self.config_manager.get("timer", "flicker_length") or 150
         min_pct = self.config_manager.get("timer", "min_marker_percent") or 0.1
         ec_rate = self.config_manager.get("timer", "error_correction_rate") or 0.6
         h_dist = self.config_manager.get("timer", "hybrid_dist_threshold") or 20
-        detect_mode = self.config_manager.get("timer", "detect_mode") or "Corrected"
+        detect_mode = self.config_manager.get("timer", "detect_mode") or "Hybrid"
         view_mode = self.config_manager.get("timer", "view_mode") or "Original"
         stag_lib = int(self.config_manager.get("timer", "stag_library") or 15)
         
-        current_executor = executor if executor else self.executor
-        maps = self.calib_cache.get((w, h)); mx, my = maps if maps else (None, None)
-        if not maps: detect_mode = "Original"; view_mode = "Original"
+        # マップがない場合は補正モードを無効化
+        actual_detect_mode = detect_mode
+        actual_view_mode = view_mode
+        if mx is None:
+            if actual_detect_mode != "Original": actual_detect_mode = "Original"
+            if actual_view_mode == "Corrected": actual_view_mode = "Original"
         
+        current_executor = executor if executor else self.executor
         thickness, now = (4 if h >= 720 else 2), time.monotonic()
         self.current_fps = 1.0 / (now - self.last_frame_time) if now - self.last_frame_time > 0 else 0; self.last_frame_time = now
         
@@ -235,22 +281,24 @@ class TimerManager:
             q_orig = frame[qy:qy+qh, qx:qx+qw].copy()
             res_final = []; display_q = q_orig
             
-            needs_undistort = (detect_mode in ["Corrected", "Hybrid"]) and mx is not None
-            if needs_undistort:
+            # 補正検知の実行条件
+            if actual_detect_mode in ["Corrected", "Hybrid"] and mx is not None:
                 try:
                     q_undist = cv2.remap(q_orig, mx, my, cv2.INTER_LINEAR)
+                    if actual_view_mode == "Corrected": display_q = q_undist
+                    
                     g_undist = cv2.cvtColor(q_undist, cv2.COLOR_BGR2GRAY)
                     u_list = self._detect_markers_in_image(g_undist, m_sys, stag_lib, ec_rate)
                     for r in u_list:
                         c_inv = r["corners"].copy()
                         for pt in c_inv:
                             ux, uy = int(pt[0]), int(pt[1])
-                            if 0 <= ux < qw and 0 <= uy < qh: pt[0], pt[1] = mx[uy, ux], my[uy, ux]
+                            if 0 <= ux < qw and 0 <= uy < qh: 
+                                pt[0], pt[1] = mx[uy, ux], my[uy, ux]
                         res_final.append({"corners": c_inv, "id": r["id"], "is_stag": r["is_stag"], "color": (0, 255, 255)})
-                    if view_mode == "Corrected": display_q = q_undist
                 except: pass
 
-            if detect_mode in ["Original", "Hybrid"]:
+            if actual_detect_mode in ["Original", "Hybrid"]:
                 try:
                     g_orig = cv2.cvtColor(q_orig, cv2.COLOR_BGR2GRAY)
                     o_list = self._detect_markers_in_image(g_orig, m_sys, stag_lib, ec_rate)
