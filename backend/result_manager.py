@@ -10,9 +10,7 @@ class ResultManager:
         self.config_manager = config_manager
         self.log_callback = None
         self._cache = {
-            "ranking": [], "pmap": {}, "meta": {}, 
-            "next_heat": {"name": "---", "pilots": []}, 
-            "last_heat": {"name": "---", "pilots": []}
+            "meta": {}
         }
         self.race_start_mono = 0.0
         self.race_stop_time = 0.0
@@ -216,8 +214,6 @@ class ResultManager:
             eid = meta.get("id")
             if not eid: return None
             event_name = meta.get("name", "Unknown")
-            min_lap_time = self.parse_duration_to_seconds(meta.get("minLapTime"))
-            
             pilots = {p["id"]: p for p in self.fetch_pb("pilots", {"perPage": 500})}
             races = self.fetch_pb("races", params={"filter": f"event = '{eid}' && valid = true", "sort": "start", "perPage": 500})
             r_dict = {r["id"]: r for r in races}

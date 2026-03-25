@@ -32,23 +32,47 @@ else:
 
 class FrameGrabber:
     def __init__(self, device_id, width, height, fps):
-        self.device_id = device_id; self.width = width; self.height = height; self.fps = fps
-        self.cap = None; self.frame = None; self.capture_time = 0.0; self.running = False; self.new_frame_event = threading.Event()
-    def start(self): self.running = True; self.thread = threading.Thread(target=self.run, daemon=True); self.thread.start()
+        self.device_id = device_id
+        self.width = width
+        self.height = height
+        self.fps = fps
+        self.cap = None
+        self.frame = None
+        self.capture_time = 0.0
+        self.running = False
+        self.new_frame_event = threading.Event()
+
+    def start(self):
+        self.running = True
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread.start()
+
     def run(self):
         while self.running:
             if self.cap is None or not self.cap.isOpened():
-                if self.cap: self.cap.release()
+                if self.cap:
+                    self.cap.release()
                 self.cap = cv2.VideoCapture(self.device_id)
-                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width); self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-                self.cap.set(cv2.CAP_PROP_FPS, self.fps); time.sleep(1.0); continue
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+                self.cap.set(cv2.CAP_PROP_FPS, self.fps)
+                time.sleep(1.0)
+                continue
             ret, frame = self.cap.read()
-            if ret: self.frame = frame; self.capture_time = time.monotonic(); self.new_frame_event.set()
-            else: self.cap.release(); time.sleep(0.5)
+            if ret:
+                self.frame = frame
+                self.capture_time = time.monotonic()
+                self.new_frame_event.set()
+            else:
+                self.cap.release()
+                time.sleep(0.5)
+
     def stop(self):
         self.running = False
-        if hasattr(self, 'thread'): self.thread.join(timeout=1.0)
-        if self.cap: self.cap.release()
+        if hasattr(self, 'thread'):
+            self.thread.join(timeout=1.0)
+        if self.cap:
+            self.cap.release()
 
 class TimerManager:
     def __init__(self, config_manager, on_lap_callback=None, on_heartbeat_callback=None):
@@ -67,12 +91,15 @@ class TimerManager:
 
         self.aruco_dict = self._load_or_create_aruco_dict()
         self.aruco_params = cv2.aruco.DetectorParameters()
+        self._cached_ec_rate = 0.6
+        self.aruco_detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
         self.calib_cache = {}; self._setup_calibration()
         tc = self.config_manager.get("timer", "thread_count") or 2
         self.executor = ThreadPoolExecutor(max_workers=tc)
         self.race_start_time = time.monotonic(); self.last_heartbeat_time = 0; self.last_frame_time = time.monotonic(); self.current_fps = 0.0; self.cycle_count = 0
         self.cam_states = {i: {"is_in_gate": False, "last_marker_id": -1, "loop_time": 0.0, "rss_output": False, "current_count": 0, "flicker_endtime": 0} for i in range(4)}
         self.display_frame = None
+        self.draw_enabled = True
 
     def log(self, cat, msg):
         if self.log_callback: self.log_callback(cat, msg)
@@ -169,7 +196,8 @@ class TimerManager:
 
     def restart(self):
         self.log("System", "TimerManager: Restarting services...")
-        # サービス再起動時にキャリブレーション設定を再読み込み
+        # サービス再起動時にキャリブレーションキャッシュをクリアして再読み込み
+        self.calib_cache = {}
         self._setup_calibration()
         
         with self.lock:
@@ -209,7 +237,7 @@ class TimerManager:
             self.grabber.start()
             self.log("System", f"Camera Capture Started: {t_cam} ({rw}x{rh})")
 
-    def _detect_markers_in_image(self, gray_img, marker_system, stag_lib, ec_rate):
+    def _detect_markers_in_image(self, gray_img, marker_system, stag_lib, aruco_detector):
         results = []
         if gray_img is None or gray_img.size == 0: return results
 
@@ -223,9 +251,7 @@ class TimerManager:
         
         if marker_system in ["ArUco", "Hybrid"]:
             try:
-                self.aruco_params.errorCorrectionRate = ec_rate
-                detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
-                ac, aid, _ = detector.detectMarkers(gray_img)
+                ac, aid, _ = aruco_detector.detectMarkers(gray_img)
                 if aid is not None and len(aid) > 0:
                     for j, c_raw in enumerate(ac):
                         results.append({"corners": c_raw[0] if len(c_raw.shape) > 2 else c_raw, "id": int(aid[j][0]), "is_stag": False})
@@ -233,7 +259,7 @@ class TimerManager:
                 self.log("Timer", f"ArUco Error: {e}")
         return results
 
-    def process_frame(self, frame, capture_time, executor=None):
+    def process_frame(self, frame, capture_time, executor=None, draw=True):
         if frame is None: return None
         start_proc = time.monotonic()
         
@@ -264,7 +290,14 @@ class TimerManager:
         detect_mode = self.config_manager.get("timer", "detect_mode") or "Hybrid"
         view_mode = self.config_manager.get("timer", "view_mode") or "Original"
         stag_lib = int(self.config_manager.get("timer", "stag_library") or 15)
-        
+        show_rect = self.config_manager.get("timer", "show_marker_rectangle")
+        show_info = self.config_manager.get("timer", "show_detection_info")
+        if ec_rate != self._cached_ec_rate:
+            self.aruco_params.errorCorrectionRate = ec_rate
+            self.aruco_detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
+            self._cached_ec_rate = ec_rate
+        detector = self.aruco_detector
+
         # マップがない場合は補正モードを無効化
         actual_detect_mode = detect_mode
         actual_view_mode = view_mode
@@ -288,7 +321,7 @@ class TimerManager:
                     if actual_view_mode == "Corrected": display_q = q_undist
                     
                     g_undist = cv2.cvtColor(q_undist, cv2.COLOR_BGR2GRAY)
-                    u_list = self._detect_markers_in_image(g_undist, m_sys, stag_lib, ec_rate)
+                    u_list = self._detect_markers_in_image(g_undist, m_sys, stag_lib, detector)
                     for r in u_list:
                         c_inv = r["corners"].copy()
                         for pt in c_inv:
@@ -301,7 +334,7 @@ class TimerManager:
             if actual_detect_mode in ["Original", "Hybrid"]:
                 try:
                     g_orig = cv2.cvtColor(q_orig, cv2.COLOR_BGR2GRAY)
-                    o_list = self._detect_markers_in_image(g_orig, m_sys, stag_lib, ec_rate)
+                    o_list = self._detect_markers_in_image(g_orig, m_sys, stag_lib, detector)
                     if detect_mode == "Hybrid":
                         for or_ in o_list:
                             is_dup = False; oc = np.mean(or_["corners"], axis=0)
@@ -316,14 +349,21 @@ class TimerManager:
                 except: pass
             return idx, res_final, display_q
 
-        futures = [current_executor.submit(run_quad_task, i) for i in range(4)]; q_results = [None]*4; q_displays = [None]*4
+        futures = [current_executor.submit(run_quad_task, i) for i in range(4)]
+        q_results = [None] * 4
+        q_displays = [None] * 4
         for f in futures:
-            idx, res, disp = f.result(); q_results[idx] = res; q_displays[idx] = disp
+            idx, res, disp = f.result()
+            q_results[idx] = res
+            q_displays[idx] = disp
         
-        display_f = np.vstack((np.hstack((q_displays[0], q_displays[1])), np.hstack((q_displays[2], q_displays[3]))))
-        if view_mode == "Source": display_f = cv2.resize(frame, (w, h))
-        
-        counts = {i: 0 for i in range(4)}; first_ids = {i: -1 for i in range(4)}; last_was_stag = {i: False for i in range(4)}
+        if draw:
+            display_f = np.vstack((np.hstack((q_displays[0], q_displays[1])), np.hstack((q_displays[2], q_displays[3]))))
+            if view_mode == "Source": display_f = cv2.resize(frame, (w, h))
+
+        counts = {i: 0 for i in range(4)}
+        first_ids = {i: -1 for i in range(4)}
+        last_was_stag = {i: False for i in range(4)}
         for i in range(4):
             qx, qy = (i % 2) * qw, (i // 2) * qh
             for m in q_results[i]:
@@ -331,10 +371,10 @@ class TimerManager:
                 if area_pct < min_pct: continue
                 counts[i] += 1
                 if first_ids[i] == -1 or (m["is_stag"] and not last_was_stag[i]): first_ids[i], last_was_stag[i] = m["id"], m["is_stag"]
-                if self.config_manager.get("timer", "show_marker_rectangle"):
+                if draw and show_rect:
                     draw_c = c.copy(); draw_c[:, 0] += qx; draw_c[:, 1] += qy; cx, cy = np.mean(draw_c[:, 0]), np.mean(draw_c[:, 1])
                     cv2.polylines(display_f, [np.int32(draw_c).reshape((-1, 1, 2))], True, m["color"], thickness); cv2.putText(display_f, f"ID:{m['id']}", (int(cx), int(cy)-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, m["color"], thickness//2)
-        
+
         for i in range(4):
             state = self.cam_states[i]
             if counts[i] >= m_thr: state["is_in_gate"], state["last_marker_id"], state["flicker_endtime"] = True, first_ids[i], 0
@@ -345,39 +385,63 @@ class TimerManager:
                         if self.on_lap_callback: self.on_lap_callback(i, capture_time, state["last_marker_id"])
                         state["is_in_gate"], state["rss_output"], state["flicker_endtime"] = False, True, 0
             state["current_count"] = counts[i]; state["loop_time"] = (time.monotonic() - start_proc) * 1000
-            
-        if view_mode != "Source": cv2.line(display_f, (qw, 0), (qw, h), (255, 255, 255), 1); cv2.line(display_f, (0, qh), (w, qh), (255, 255, 255), 1)
-        if self.config_manager.get("timer", "show_detection_info"):
-            for i in range(4):
-                s = self.cam_states[i]; color = (0, 255, 0) if s["is_in_gate"] else (0, 165, 255)
-                cv2.putText(display_f, f"Cam {i}: {s['current_count']}/{m_thr}", (int((i%2)*w/2+10), int((i//2)*h/2+35)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-        self.cycle_count += 1; return display_f
+
+        if draw:
+            if view_mode != "Source": cv2.line(display_f, (qw, 0), (qw, h), (255, 255, 255), 1); cv2.line(display_f, (0, qh), (w, qh), (255, 255, 255), 1)
+            if show_info:
+                for i in range(4):
+                    s = self.cam_states[i]; color = (0, 255, 0) if s["is_in_gate"] else (0, 165, 255)
+                    cv2.putText(display_f, f"Cam {i}: {s['current_count']}/{m_thr}", (int((i%2)*w/2+10), int((i//2)*h/2+35)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+        self.cycle_count += 1; return display_f if draw else None
 
     def run(self):
         self.running = True
         while self.running:
-            with self.lock: g = self.grabber
+            with self.lock:
+                g = self.grabber
             if g and g.new_frame_event.wait(timeout=0.1):
                 raw_f, cap_t, exe = None, 0.0, None
                 with self.lock:
                     if self.grabber == g:
-                        raw_f = g.frame; cap_t = g.capture_time; g.new_frame_event.clear()
-                        if self.executor and not getattr(self.executor, '_shutdown', False): exe = self.executor
+                        raw_f = g.frame
+                        cap_t = g.capture_time
+                        g.new_frame_event.clear()
+                        if self.executor and not getattr(self.executor, '_shutdown', False):
+                            exe = self.executor
                 if raw_f is not None and exe is not None:
                     try:
-                        self.display_frame = self.process_frame(raw_f.copy(), cap_t, executor=exe)
-                        vcam_local = None
-                        with self.lock: vcam_local = self.vcam
-                        if vcam_local:
-                            h, w = self.display_frame.shape[:2]; tw, th = self.vcam_w, self.vcam_h; canvas = np.zeros((th, tw, 3), dtype=np.uint8); scale = min(tw / w, th / h); nw, nh = int(w * scale), int(h * scale); v_frame = cv2.resize(self.display_frame, (nw, nh), interpolation=cv2.INTER_CUBIC); dx, dy = (tw - nw) // 2, (th - nh) // 2; canvas[dy:dy+nh, dx:dx+nw] = v_frame
+                        with self.lock:
+                            vcam_local = self.vcam
+                        draw = self.draw_enabled or (vcam_local is not None)
+                        self.display_frame = self.process_frame(raw_f.copy(), cap_t, executor=exe, draw=draw)
+                        if vcam_local and self.display_frame is not None:
+                            h, w = self.display_frame.shape[:2]
+                            tw, th = self.vcam_w, self.vcam_h
+                            canvas = np.zeros((th, tw, 3), dtype=np.uint8)
+                            scale = min(tw / w, th / h)
+                            nw, nh = int(w * scale), int(h * scale)
+                            v_frame = cv2.resize(self.display_frame, (nw, nh), interpolation=cv2.INTER_CUBIC)
+                            dx, dy = (tw - nw) // 2, (th - nh) // 2
+                            canvas[dy:dy+nh, dx:dx+nw] = v_frame
                             with self.lock:
-                                if self.vcam == vcam_local: vcam_local.send(canvas); vcam_local.sleep_until_next_frame()
+                                if self.vcam == vcam_local:
+                                    vcam_local.send(canvas)
+                                    vcam_local.sleep_until_next_frame()
                     except Exception as e:
-                        if "shutdown" not in str(e): self.log("System", f"Loop Error: {e}")
+                        if "shutdown" not in str(e):
+                            self.log("System", f"Loop Error: {e}")
             now = time.monotonic()
             if now - self.last_heartbeat_time >= 0.5:
-                if self.on_heartbeat_callback: self.on_heartbeat_callback({"current_rssi": [200 if self.cam_states[i]["is_in_gate"] else 50 for i in range(4)], "frequency": self.config_manager.get("timer", "camera_frequencies") or [5705, 5740, 5800, 5820], "crossing_flag": [self.cam_states[i]["rss_output"] for i in range(4)], "loop_time": [self.cam_states[i]["loop_time"] for i in range(4)], "fps": self.current_fps})
-                for i in range(4): self.cam_states[i]["rss_output"] = False
+                if self.on_heartbeat_callback:
+                    self.on_heartbeat_callback({
+                        "current_rssi": [200 if self.cam_states[i]["is_in_gate"] else 50 for i in range(4)],
+                        "frequency": self.config_manager.get("timer", "camera_frequencies") or [5705, 5740, 5800, 5820],
+                        "crossing_flag": [self.cam_states[i]["rss_output"] for i in range(4)],
+                        "loop_time": [self.cam_states[i]["loop_time"] for i in range(4)],
+                        "fps": self.current_fps
+                    })
+                for i in range(4):
+                    self.cam_states[i]["rss_output"] = False
                 self.last_heartbeat_time = now
             time.sleep(0.001)
         self.stop_resources()
@@ -391,5 +455,12 @@ class TimerManager:
                 self.vcam = None
             if hasattr(self, 'executor'): self.executor.shutdown(wait=False)
 
-    def start(self): self.cv_thread = threading.Thread(target=self.run, daemon=True); self.cv_thread.start()
-    def stop(self): self.running = False; self.cv_thread.join(timeout=2.0) if self.cv_thread else None; self.stop_resources()
+    def start(self):
+        self.cv_thread = threading.Thread(target=self.run, daemon=True)
+        self.cv_thread.start()
+
+    def stop(self):
+        self.running = False
+        if self.cv_thread:
+            self.cv_thread.join(timeout=2.0)
+        self.stop_resources()

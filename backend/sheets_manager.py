@@ -190,7 +190,4 @@ class SheetsManager:
             self.log(f"Spreadsheets updated successfully (Node.js style matched).")
         except Exception as e:
             self.log(f"Spreadsheet Error: {e}")
-        except Exception as e:
-            self.log(f"Spreadsheet Error: {e}")
 
-    def update_results(self, dummy): pass

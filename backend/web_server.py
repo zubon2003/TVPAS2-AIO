@@ -263,7 +263,7 @@ class WebServer:
         if self.loop:
             for port, info in self.sio_servers.items():
                 if info["role"] == "web_ui":
-                    async def do_emit(): await info["sio"].emit('leaderboard_refresh', {"time": time.time()})
+                    async def do_emit(s=info["sio"]): await s.emit('leaderboard_refresh', {"time": time.time()})
                     asyncio.run_coroutine_threadsafe(do_emit(), self.loop)
 
     async def _heartbeat_worker(self):

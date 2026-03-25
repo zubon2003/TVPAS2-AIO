@@ -2,7 +2,6 @@ import os
 import time
 import threading
 import pygame
-from queue import Queue
 
 try:
     import serial
@@ -17,11 +16,7 @@ class RelayManager:
         self.on_heartbeat_callback = on_heartbeat_callback
         self.timer_manager = None
         self.log_callback = None
-        self.queue = Queue()
-        self.running = True
         self.ser = None
-        self.thread = threading.Thread(target=self._process_queue, daemon=True)
-        self.thread.start()
         
         pygame.mixer.init()
         self.sounds = {
@@ -61,12 +56,15 @@ class RelayManager:
     def on_race_stage(self, start_time):
         self.log("System", f"Race Stage Received. Start at: {start_time}")
         def countdown():
-            now = time.monotonic(); delay = start_time - now
-            if delay > 5: time.sleep(delay - 5); now = time.monotonic()
-            
-            comp = (self.config_manager.get("relay", "espnow_compensation") or 200) / 1000.0
             voice_enabled = self.config_manager.get("result_formatter", "countdown_voice") or False
-            
+
+            now = time.monotonic()
+            delay = start_time - now
+            if delay > 8:
+                time.sleep(delay - 8)
+            if voice_enabled:
+                self.sounds["ready"].play()
+
             for i in range(5, 0, -1):
                 wait = start_time - i - time.monotonic()
                 if wait > 0: time.sleep(wait)
@@ -96,17 +94,12 @@ class RelayManager:
         try: self.ser.write(msg.encode())
         except: self.ser = None
 
-    def _process_queue(self):
-        while self.running:
-            item = self.queue.get()
-            # 内部キュー処理（将来用）
-            self.queue.task_done()
-
     def on_frequency_setup(self, data):
         self.log("System", "External frequency setup ignored. Current config preserved.")
 
-    def stop(self): 
-        self.running = False
+    def stop(self):
         if self.ser:
-            try: self.ser.close()
-            except: pass
+            try:
+                self.ser.close()
+            except:
+                pass
